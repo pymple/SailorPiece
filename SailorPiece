@@ -808,10 +808,17 @@ fn.DoFarmTick=function()
         S.Notify.new({Title="Teleporting to "..fn.PortalDisplayName(tgtIsland.Portal),Content="Lv."..fn.GetLevel().." | "..tgtIsland.QuestNPC,Duration=3,Icon=S.ICON})
     end
     if not S.IslandTPd then
+        local hrpBefore=fn.PlayerHRP()
+        local posBefore=hrpBefore and hrpBefore.Position
         if fn.ForceTP(S.CurIsland.Portal) then
+            task.wait(0.8)
+            local hrpAfter=fn.PlayerHRP()
+            if posBefore and hrpAfter and (posBefore-hrpAfter.Position).Magnitude<30 then
+                fn.ForceTP(S.CurIsland.Portal)
+                task.wait(1.0)
+            end
             S.IslandTPd=true
             local snapIsland=S.CurIsland
-            task.wait(0.8)
             for _=1,8 do
                 if S.CurIsland~=snapIsland then return end
                 if #fn.FindEnemies(S.CurIsland)>0 then break end
@@ -841,7 +848,7 @@ fn.DoFarmTick=function()
         if S.CurTarget then fn.TweenTo(S.CurTarget) fn.Attack(S.CurTarget) end
     else
         S.CurTarget=nil S.LockTarget=nil
-        if tick()-S.LastEnemy>20 then S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0 S.HoverPos=nil end
+        if tick()-S.LastEnemy>10 then S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0 S.HoverPos=nil end
         task.wait(0.15)
     end
     if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() fn.EquipBothWeapons() end
@@ -1215,8 +1222,12 @@ fn.DoSummonBossTick=function()
             local bp=fn.ModelPos(nextModel)
             if bp then
                 local goal=Vector3.new(bp.X,bp.Y+F.HeightOffset,bp.Z)
-                fn.TweenToPoint(goal)
-                S.HoverPos=goal
+                local hrp=fn.PlayerHRP()
+                local d=hrp and (hrp.Position-goal).Magnitude or math.huge
+                if d<=500 then
+                    fn.TweenToPoint(goal)
+                    S.HoverPos=goal
+                end
             end
         end
         S.SummonBossTPDone=true S.SummonBossTarget=nextName
@@ -1312,8 +1323,7 @@ fn.DoSummonBossTick=function()
     end
     S.CurTarget=model
     local goal=Vector3.new(bossPos.X,bossPos.Y+F.HeightOffset,bossPos.Z)
-    if dist>200 then
-        -- Medium-far: tween to point (we're on the island, just far away)
+    if dist>80 then
         fn.TweenToPoint(goal)
     elseif dist>15 then
         fn.TweenTo(model)
@@ -1563,7 +1573,7 @@ end})
 S.DungeonToggle.Link:AddHelper({Text="Collect 6 puzzle pieces across islands"})
 QSec:AddParagraph({Title="Info",Content="1. Accepts quest remotely\n2. Collects 6 pieces (Starter→Jungle→Desert→Snow→Shibuya→Hueco Mundo)\n3. Returns to Dungeon Master\n\nPriority: overrides all other modes"})
 local FSec=FTab:DrawSection({Name="Auto Farm Level",Position="left"})
-S.FarmToggle=FSec:AddToggle({Name="Auto Farm Level",Flag="AutoFarmLevel",Default=false,Callback=function(v) F.AutoFarmLevel=v if not v then fn.FullReset() end end})
+S.FarmToggle=FSec:AddToggle({Name="Auto Farm Level",Flag="AutoFarmLevel",Default=false,Callback=function(v) F.AutoFarmLevel=v if v then S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.QState="NONE" S.CurTarget=nil S.LockTarget=nil S.HoverPos=nil S.LastEnemy=0 else fn.FullReset() end end})
 S.FarmKeybind=S.FarmToggle.Link:AddKeybind({Default="V",Flag="FarmLevelKeybind",Callback=function() end})
 S.FarmToggle.Link:AddHelper({Text="Plank above enemies & attack"})
 FSec:AddToggle({Name="Auto Equip Sword",Flag="AutoEquip",Default=true,Callback=function(v) F.AutoEquip=v end})
@@ -1574,8 +1584,9 @@ FSec:AddDropdown({Name="Island",Default="Auto",Values=fn.GetIslandNames(),Flag="
     F.SelectedIsland=v
     fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
     S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0
-    S.LastTP=0 S.TPCount=0 S.TPReset=tick()
+    S.CurTarget=nil S.LastTP=0 S.TPCount=0 S.TPReset=tick()
     S.QState="NONE"
+    fn.AbandonAllQuests()
     S.Notify.new({Title="Island Changed",Content="Now farming: "..fn.PortalDisplayName(v),Duration=2,Icon=S.ICON})
 end})
 FSec:AddDropdown({Name="Farm Style",Default="Plank",Values={"Plank","Behind"},Flag="FarmMode",Callback=function(v) F.FarmMode=v fn.ClearTgt() S.HoverPos=nil if v~="Plank" then pcall(function() local c=LP.Character if c then local hm=c:FindFirstChildOfClass("Humanoid") if hm then hm.PlatformStand=false end end end) end end}).Link:AddHelper({Text="Plank = hover above | Behind = stand behind"})
