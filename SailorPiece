@@ -110,7 +110,7 @@ S.SummonBossOrder=0 S.SummonBossFailCount={}
 S.SummonBossFireTime={}
 S.AutoSpawnActive={}
 S.ButtonBorderStrokes={}
-S.DungeonStep=0 S.DungeonTPDone=false S.LastDungeonTP=0 S.DungeonQuestActive=false S.DungeonSearchFails=0 S.NoclipActive=false
+S.DungeonStep=0 S.DungeonCollected={} S.NoclipActive=false
 S.DungeonPieceIslands={"Starter","Jungle","Desert","Snow","Shibuya","HuecoMundo"}
 S.SummonBossIslandMap={}
 for _,b in ipairs(S.SummonBosses) do S.SummonBossIslandMap[b.Name]=b.Island or S.BOSS_ISLAND_PORTAL end
@@ -593,12 +593,17 @@ fn.EquipBothWeapons=function()
     end
     if melee and sword then
         hm:UnequipTools() task.wait(0.1)
-        melee.Parent=c
-        sword.Parent=c
+        local ok1=pcall(function() melee.Parent=c end)
+        local ok2=pcall(function() sword.Parent=c end)
+        if not ok1 or not ok2 then
+            pcall(function() hm:EquipTool(sword) end)
+            task.wait(0.05)
+            pcall(function() hm:EquipTool(melee) end)
+        end
     elseif sword and not melee then
-        sword.Parent=c
+        if not pcall(function() sword.Parent=c end) then pcall(function() hm:EquipTool(sword) end) end
     elseif melee and not sword then
-        melee.Parent=c
+        if not pcall(function() melee.Parent=c end) then pcall(function() hm:EquipTool(melee) end) end
     end
 end
 fn.GetGoalForEnemy=function(enemy)
@@ -1270,72 +1275,20 @@ fn.AbandonDungeonQuest=function()
     end)
 end
 fn.AcceptDungeonQuest=function()
-    -- Try QuestAccept remote with dungeon-related args
-    pcall(function()
-        local qa=fn.WalkPathWait(RS,2,unpack(R.QuestAccept))
-        if qa then
-            for _,arg in ipairs({"DungeonUnlock","DungeonMaster","Dungeon","DungeonQuest","dungeon","DungeonNPC"}) do
-                pcall(function() qa:FireServer(arg) end) task.wait(0.1)
-            end
-        end
-    end)
-    task.wait(0.3) fn.ClickYes() task.wait(0.2) fn.ClickYes()
-    -- Try ProximityPrompt on any dungeon NPC
-    pcall(function()
-        local npc=nil
-        for _,desc in ipairs(workspace:GetDescendants()) do
-            if desc:IsA("ProximityPrompt") then
-                local par=desc.Parent
-                local name=(par and par.Name or ""):lower()
-                if name:find("dungeon") then npc=desc break end
-                if par and par.Parent then
-                    local pname=(par.Parent.Name or ""):lower()
-                    if pname:find("dungeon") then npc=desc break end
-                end
-            end
-        end
-        if npc then
-            local hrp=fn.PlayerHRP()
-            local pp=npc.Parent
-            local pos=nil
-            if pp and pp:IsA("BasePart") then pos=pp.Position
-            elseif pp and pp:IsA("Model") then pos=fn.ModelPos(pp) end
-            if hrp and pos then hrp.CFrame=CFrame.new(pos+Vector3.new(0,3,0)) task.wait(0.3) end
-            pcall(function() fireproximityprompt(npc) end)
-            task.wait(0.5) fn.ClickYes() task.wait(0.3) fn.ClickYes()
-        end
-    end)
+    pcall(function() fn.WalkPathWait(RS,2,"Remotes","DungeonQuestAccept"):FireServer() end)
+    task.wait(0.3) fn.ClickYes() task.wait(0.3)
+    pcall(function() fn.WalkPathWait(RS,2,unpack(R.QuestAccept)):FireServer("DungeonUnlock") end)
+    task.wait(0.3) fn.ClickYes()
 end
-fn.FindDungeonPiece=function(n)
-    local target="Dungeon Piece #"..n
-    local ns=tostring(n)
-    -- Pass 1: exact "Dungeon Piece #N" in name/ObjectText/billboard
+fn.FindDungeonPiece=function(island)
+    local islandLow=island:lower()
     for _,desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("ProximityPrompt") then
-            if desc.ObjectText and desc.ObjectText:find(target,1,true) then return desc end
-            local par=desc.Parent
-            if par then
-                if par.Name==target then return desc end
-                if par.Parent and par.Parent.Name==target then return desc end
-                local bill=par:FindFirstChildOfClass("BillboardGui")
-                if bill then for _,ch in ipairs(bill:GetDescendants()) do if ch:IsA("TextLabel") and (ch.Text or ""):find(target,1,true) then return desc end end end
+        if desc.Name=="DungeonPuzzlePiece" and desc:IsA("BasePart") then
+            local anc=desc.Parent
+            while anc and anc~=workspace do
+                if anc.Name:lower():find(islandLow,1,true) then return desc end
+                anc=anc.Parent
             end
-        end
-    end
-    -- Pass 2: "Dungeon" + "#N" in parent/grandparent (must have "Dungeon" AND "#N" pattern)
-    local hashN="#"..ns
-    for _,desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("ProximityPrompt") then
-            local par=desc.Parent
-            if par then
-                local pn=par.Name or ""
-                if pn:find("Dungeon") and pn:find(hashN,1,true) then return desc end
-                if par.Parent then
-                    local gpn=par.Parent.Name or ""
-                    if gpn:find("Dungeon") and gpn:find(hashN,1,true) then return desc end
-                end
-            end
-            if desc.ObjectText and desc.ObjectText:find("Dungeon") and desc.ObjectText:find(hashN,1,true) then return desc end
         end
     end
     return nil
@@ -1343,95 +1296,122 @@ end
 fn.DoDungeonQuestTick=function()
     if not F.DungeonQuest then return end
     local step=S.DungeonStep
+    -- Step 0: accept quest remotely (no TP needed), then start collecting
     if step<1 then
-        S.Notify.new({Title="Dungeon Quest",Content="Going to Dungeon Island to accept quest",Duration=3,Icon=S.ICON})
-        fn.ForceTP("Dungeon")
-        task.wait(1.5)
+        fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+        S.Notify.new({Title="Dungeon Quest",Content="Accepting quest...",Duration=2,Icon=S.ICON})
         fn.AcceptDungeonQuest()
         task.wait(0.5)
-        S.DungeonStep=1 S.DungeonTPDone=false S.DungeonQuestActive=true
-        S.Notify.new({Title="Dungeon Quest",Content="Quest accepted — collecting piece #1",Duration=3,Icon=S.ICON})
+        S.DungeonStep=1 S.DungeonCollected={}
+        S.Notify.new({Title="Dungeon Quest",Content="Quest accepted — starting piece #1",Duration=3,Icon=S.ICON})
         return
     end
+    -- Step >6: done, return to dungeon master to turn in
     if step>6 then
+        fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
         S.Notify.new({Title="Dungeon Quest",Content="All 6 pieces collected! Returning to Dungeon Master",Duration=4,Icon=S.ICON})
         fn.ForceTP("Dungeon")
-        task.wait(1.5)
+        task.wait(4)
+        fn.WaitChar()
         fn.AcceptDungeonQuest()
-        task.wait(0.5)
+        task.wait(1)
         F.DungeonQuest=false
-        S.DungeonStep=0 S.DungeonTPDone=false S.DungeonQuestActive=false
+        S.DungeonStep=0 S.DungeonCollected={}
         if S.DungeonToggle then pcall(function() S.DungeonToggle:SetValue(false) end) end
         S.Notify.new({Title="Dungeon Quest",Content="Complete! Dungeon unlocked.",Duration=5,Icon=S.ICON})
         return
     end
+    -- Steps 1-6: collect piece on each island
     local island=S.DungeonPieceIslands[step]
     if not island then S.DungeonStep=step+1 return end
-    if not S.DungeonTPDone then
-        if tick()-S.LastDungeonTP<3 then task.wait(0.3) return end
-        S.LastDungeonTP=tick()
-        S.Notify.new({Title="Dungeon Piece #"..step,Content="Teleporting to "..fn.PortalDisplayName(island),Duration=2,Icon=S.ICON})
-        fn.ForceTP(island)
-        task.wait(1.5)
-        S.DungeonTPDone=true
+    if S.DungeonCollected and S.DungeonCollected[step] then
+        S.DungeonStep=step+1
         return
     end
-    local prompt=fn.FindDungeonPiece(step)
-    if prompt then
-        local par=prompt.Parent
-        local pos=nil
-        if par and par:IsA("BasePart") then pos=par.Position
-        elseif par and par:IsA("Model") then pos=fn.ModelPos(par) end
-        if pos then
-            local hrp=fn.PlayerHRP()
-            if hrp and(hrp.Position-pos).Magnitude>10 then
-                fn.TweenToPoint(Vector3.new(pos.X,pos.Y+3,pos.Z))
-                task.wait(0.3)
-            end
-        end
-        pcall(function() fireproximityprompt(prompt) end)
-        task.wait(0.5)
-        pcall(function() fireproximityprompt(prompt) end)
-        task.wait(0.3)
-        S.DungeonStep=step+1 S.DungeonTPDone=false S.DungeonSearchFails=0
-        if step<6 then
-            S.Notify.new({Title="Dungeon Piece #"..step.." Collected!",Content="Next: Piece #"..(step+1),Duration=3,Icon=S.ICON})
-        else
-            S.Notify.new({Title="Dungeon Piece #6 Collected!",Content="All pieces found!",Duration=3,Icon=S.ICON})
-        end
-    else
-        S.DungeonSearchFails=(S.DungeonSearchFails or 0)+1
-        if S.DungeonSearchFails%5==0 then
-            S.Notify.new({Title="Piece #"..step.." Not Found",Content="Searching "..fn.PortalDisplayName(island).." ("..S.DungeonSearchFails.." attempts)",Duration=3,Icon=S.ICON})
-        end
-        if S.DungeonSearchFails>=15 then
-            S.Notify.new({Title="Piece #"..step.." Skipped",Content="Not found after "..S.DungeonSearchFails.." attempts on "..fn.PortalDisplayName(island),Duration=5,Icon=S.ICON})
-            S.DungeonStep=step+1 S.DungeonTPDone=false S.DungeonSearchFails=0
-        elseif S.DungeonSearchFails%8==0 then
-            S.DungeonTPDone=false
-        else
-            local hrp=fn.PlayerHRP()
-            if hrp then fn.TweenToPoint(hrp.Position+Vector3.new(math.random(-200,200),5,math.random(-200,200))) task.wait(0.5) end
-        end
+    -- CRITICAL: clear hover/tween so RenderStepped doesn't fight the TP
+    fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+    -- Teleport
+    S.Notify.new({Title="Piece #"..step,Content="TP → "..fn.PortalDisplayName(island),Duration=3,Icon=S.ICON})
+    fn.ForceTP(island)
+    task.wait(1)
+    fn.WaitChar()
+    task.wait(3)
+    -- Search for piece (retry a few times for slow island load)
+    local piece=nil
+    for attempt=1,5 do
+        piece=fn.FindDungeonPiece(island)
+        if piece then break end
+        task.wait(2)
     end
+    if not piece then
+        -- Piece not found — either already collected or doesn't exist on this island
+        S.Notify.new({Title="Piece #"..step,Content="Not found — marking as already collected",Duration=3,Icon=S.ICON})
+        if not S.DungeonCollected then S.DungeonCollected={} end
+        S.DungeonCollected[step]=true
+        S.DungeonStep=step+1
+        return
+    end
+    -- Move to piece: clear hover again, then CFrame directly
+    S.HoverPos=nil S.LockTarget=nil fn.StopTw()
+    local pos=piece.Position
+    local hrp=fn.PlayerHRP()
+    if hrp then
+        hrp.CFrame=CFrame.new(pos.X,pos.Y+2,pos.Z)
+        task.wait(0.5)
+    end
+    -- Fire PuzzlePrompt
+    local pp=piece:FindFirstChild("PuzzlePrompt") or piece:FindFirstChildOfClass("ProximityPrompt")
+    if not pp then for _,ch in ipairs(piece:GetDescendants()) do if ch:IsA("ProximityPrompt") then pp=ch break end end end
+    if pp then
+        pcall(function() fireproximityprompt(pp) end)
+        task.wait(0.5)
+        pcall(function() fireproximityprompt(pp) end)
+    end
+    -- Mark collected, advance
+    if not S.DungeonCollected then S.DungeonCollected={} end
+    S.DungeonCollected[step]=true
+    S.DungeonStep=step+1
+    -- Clear hover so next TP works
+    fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+    S.Notify.new({Title="Piece #"..step.." ✓",Content=step<6 and("Next: piece #"..(step+1).." → "..fn.PortalDisplayName(S.DungeonPieceIslands[step+1] or "?")) or "All 6 pieces found!",Duration=3,Icon=S.ICON})
+    task.wait(2)
 end
 fn.ScanDungeonDebug=function()
     local lines={}
     table.insert(lines,"== QUEST STATE ==")
-    table.insert(lines,"Step: "..S.DungeonStep.." | TPDone: "..tostring(S.DungeonTPDone).." | Active: "..tostring(S.DungeonQuestActive).." | Fails: "..(S.DungeonSearchFails or 0))
-    table.insert(lines,"== DUNGEON OBJECTS (workspace) ==")
+    local collectedStr="" for k in pairs(S.DungeonCollected or {}) do collectedStr=collectedStr..k.."," end
+    table.insert(lines,"Step: "..S.DungeonStep.." | Collected: {"..collectedStr.."} | Flag: "..tostring(F.DungeonQuest))
+    table.insert(lines,"== DUNGEON PIECES (detail) ==")
     local ct=0
     for _,desc in ipairs(workspace:GetDescendants()) do
-        local nm=(desc.Name or ""):lower()
-        if (nm:find("dungeon") or nm:find("piece")) and ct<30 then
+        if desc.Name=="DungeonPuzzlePiece" and ct<10 then
             ct=ct+1
+            local info=desc.Name.." ["..desc.ClassName.."] in "..(desc.Parent and desc.Parent.Name or "?")
+            pcall(function() info=info.." Trans="..desc.Transparency end)
+            pcall(function() info=info.." CC="..tostring(desc.CanCollide) end)
+            pcall(function() info=info.." Anch="..tostring(desc.Anchored) end)
+            pcall(function() if desc:IsA("BasePart") then info=info.." Pos="..math.floor(desc.Position.X)..","..math.floor(desc.Position.Y)..","..math.floor(desc.Position.Z) end end)
+            local kids={} for _,ch in ipairs(desc:GetChildren()) do table.insert(kids,ch.Name.."["..ch.ClassName.."]") end
+            info=info.." Children={"..table.concat(kids,",").."}"
+            local touchConns=0 pcall(function() touchConns=#getconnections(desc.Touched) end)
+            info=info.." TouchConns="..touchConns
+            table.insert(lines,info)
+        end
+    end
+    if ct==0 then table.insert(lines,"(no DungeonPuzzlePiece found)") end
+    table.insert(lines,"== ALL DUNGEON/PUZZLE OBJECTS ==")
+    local ct2=0
+    for _,desc in ipairs(workspace:GetDescendants()) do
+        local nm=(desc.Name or ""):lower()
+        if (nm:find("dungeon") or nm:find("puzzle")) and not(desc.Name=="DungeonPuzzlePiece") and ct2<20 then
+            ct2=ct2+1
             local info=desc.Name.." ["..desc.ClassName.."]"
             if desc.Parent then info=info.." in "..desc.Parent.Name end
             if desc:IsA("ProximityPrompt") then info=info.." Action="..(desc.ActionText or "").." Obj="..(desc.ObjectText or "") end
             table.insert(lines,info)
         end
     end
-    if ct==0 then table.insert(lines,"(none)") end
+    if ct2==0 then table.insert(lines,"(none)") end
     table.insert(lines,"== NEARBY PROMPTS (<200 studs) ==")
     local hrp=fn.PlayerHRP() local pc=0
     if hrp then
@@ -1447,12 +1427,12 @@ fn.ScanDungeonDebug=function()
         end
     end
     if pc==0 then table.insert(lines,"(none)") end
-    table.insert(lines,"== QUEST REMOTES ==")
+    table.insert(lines,"== ALL REMOTES (dungeon/puzzle/quest) ==")
     local rc=0
     pcall(function()
         for _,desc in ipairs(RS:GetDescendants()) do
             local nm=(desc.Name or ""):lower()
-            if (nm:find("quest") or nm:find("dungeon")) and (desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction")) then
+            if (nm:find("quest") or nm:find("dungeon") or nm:find("puzzle") or nm:find("piece") or nm:find("collect")) and (desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction")) then
                 rc=rc+1 table.insert(lines,desc.Name.." ["..desc.ClassName.."] in "..(desc.Parent and desc.Parent.Name or "?"))
             end
         end
@@ -1465,7 +1445,7 @@ fn.ScanDungeonDebug=function()
         for _,desc in ipairs(pg:GetDescendants()) do
             if (desc:IsA("TextLabel") or desc:IsA("TextButton")) and uc<15 then
                 local txt=(desc.Text or ""):lower()
-                if txt:find("dungeon") or txt:find("quest") or txt:find("piece") or txt:find("collect") then
+                if txt:find("dungeon") or txt:find("quest") or txt:find("piece") or txt:find("collect") or txt:find("puzzle") then
                     uc=uc+1 table.insert(lines,desc.Name..": "..(desc.Text or ""):sub(1,80))
                 end
             end
@@ -1499,22 +1479,33 @@ local QSec=QTab:DrawSection({Name="Unlock Quests",Position="left"})
 S.DungeonToggle=QSec:AddToggle({Name="Unlock Dungeons",Flag="DungeonQuest",Default=false,Callback=function(v)
     F.DungeonQuest=v
     if v then
-        S.DungeonStep=0 S.DungeonTPDone=false S.DungeonQuestActive=false
+        S.DungeonStep=0 S.DungeonCollected={}
         if F.AutoFarmLevel then
             F.AutoFarmLevel=false
             if S.FarmToggle then pcall(function() S.FarmToggle:SetValue(false) end) end
             fn.FullReset()
         end
+        if F.SummonBossEnabled then
+            F.SummonBossEnabled=false
+            if S.SummonBossToggle then pcall(function() S.SummonBossToggle:SetValue(false) end) end
+            fn.ExitSummonBossMode()
+        end
+        if F.BossEnabled then
+            F.BossEnabled=false
+            if S.BossToggle then pcall(function() S.BossToggle:SetValue(false) end) end
+        end
+        S.BossFight=false S.SummonBossFight=false
+        fn.ClearTgt() S.HoverPos=nil
         S.Notify.new({Title="Dungeon Quest",Content="Starting dungeon unlock quest",Duration=3,Icon=S.ICON})
     else
-        S.DungeonStep=0 S.DungeonTPDone=false S.DungeonQuestActive=false
+        S.DungeonStep=0 S.DungeonCollected={}
         fn.AbandonDungeonQuest()
         fn.ClearTgt() S.HoverPos=nil
         S.Notify.new({Title="Dungeon Quest",Content="Quest abandoned",Duration=3,Icon=S.ICON})
     end
 end})
 S.DungeonToggle.Link:AddHelper({Text="Collect 6 pieces across islands to unlock dungeons"})
-QSec:AddParagraph({Title="Info",Content="1. Goes to Dungeon Island to accept quest\n2. Collects 6 pieces in order (Starter→Jungle→Desert→Snow→Shibuya→Hueco Mundo)\n3. Returns to Dungeon Master\n\nWARNING: Abandoning restarts from piece #1"})
+QSec:AddParagraph({Title="Info",Content="1. Accepts quest remotely\n2. Collects 6 pieces (Starter→Jungle→Desert→Snow→Shibuya→Hueco Mundo)\n3. Returns to Dungeon Master\n\nPriority: overrides all other modes"})
 local QDebugSec=QTab:DrawSection({Name="Quest Debug",Position="right"})
 S.QuestDebugP=QDebugSec:AddParagraph({Title="Debug Output",Content="Press Scan to debug"})
 QDebugSec:AddButton({Name="Scan Dungeon",Callback=function() local txt=fn.ScanDungeonDebug() if S.QuestDebugP then pcall(function() if S.QuestDebugP.SetContent then S.QuestDebugP:SetContent(txt) elseif S.QuestDebugP.Set then S.QuestDebugP:Set(txt) elseif S.QuestDebugP.SetText then S.QuestDebugP:SetText(txt) end end) end S.Notify.new({Title="Quest Debug",Content="Scan complete — check Debug section",Duration=3,Icon=S.ICON}) end})
@@ -1666,13 +1657,14 @@ task.spawn(function()
                 S.LastBossTP=0 S.BossTPDone=false S.LastSummonBossTP=0 S.SummonBossTPDone=false
             end
             if not fn.IsAlive() then task.wait(0.3) break end
+            -- Dungeon Quest gets HIGHEST priority
+            if F.DungeonQuest then local dok,derr=pcall(fn.DoDungeonQuestTick) if not dok then S.Notify.new({Title="Dungeon Error",Content=tostring(derr):sub(1,80),Duration=5,Icon=S.ICON}) end task.wait(0.2) break end
             if not isSummonActive and S.SummonBossFight then fn.ExitSummonBossMode() end
             if isSummonActive and not S.SummonBossFight then
                 S.SummonBossFight=true S.BossFight=false S.BossTargetName=nil S.BossTPDone=false S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossFireTime={} fn.ClearTgt() S.HoverPos=nil S.CurIsland=nil S.IslandTPd=false
                 S.Notify.new({Title="Summon Boss Mode",Content="Starting summon boss cycle",Duration=3,Icon=S.ICON})
             end
             if S.SummonBossFight then fn.DoSummonBossTick() task.wait(0.1) break end
-            if F.DungeonQuest then fn.DoDungeonQuestTick() task.wait(0.2) break end
             if not F.AutoFarmLevel then task.wait(0.3) break end
             if F.BossEnabled and not S.BossFight then
                 local nextName=fn.PickNextBossName()
