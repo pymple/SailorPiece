@@ -69,6 +69,7 @@ S.ChestNames={"Common Chest","Rare Chest","Epic Chest","Legendary Chest","Mythic
 S.MerchantItems={"Boss Key","Clan Reroll","Dungeon Key","Haki Color Reroll","Race Reroll","Rush Key","Trait Reroll"}
 S.BossIsland={} S.AllBossNames={} S.BossDisplay={} S.BossRenderNear={}
 for _,b in ipairs(S.Bosses) do S.BossIsland[b.Name]=b.Island S.AllBossNames[b.Name]=true S.BossDisplay[b.Name]=b.Display if b.RenderNear then S.BossRenderNear[b.Name]=b.RenderNear end end
+S.BossSharedSpawn={AlucardBoss="Sailor_Shared",JinwooBoss="Sailor_Shared"}
 S.BF={}
 for _,b in ipairs(S.Bosses) do S.BF[b.Name]=false end
 S.BSF={} S.BSFToggle={}
@@ -476,7 +477,15 @@ fn.PickNextBossName=function()
     end
     return alive[1]
 end
-fn.RecordBossDeath=function(name) S.BossDeathTimes[name]=tick() end
+fn.RecordBossDeath=function(name)
+    S.BossDeathTimes[name]=tick()
+    local group=S.BossSharedSpawn[name]
+    if group then
+        for _,b in ipairs(S.Bosses) do
+            if S.BossSharedSpawn[b.Name]==group and b.Name~=name then S.BossDeathTimes[b.Name]=tick() end
+        end
+    end
+end
 fn.IsBossOnCooldown=function(name)
     local dt=S.BossDeathTimes[name]
     if dt and tick()-dt<30 then return true end
@@ -813,6 +822,7 @@ fn.DoBossTick=function()
                 return
             end
             S.BossTPRetries=0
+            fn.RecordBossDeath(S.BossTargetName)
             S.Notify.new({Title="Skipping "..fn.GetBossDisplay(S.BossTargetName),Content="Not found after 3 TP attempts",Duration=3,Icon=S.ICON})
             local skippedName=S.BossTargetName
             S.BossTargetName=nil S.BossTPDone=false fn.ClearTgt() S.HoverPos=nil task.wait(0.15)
