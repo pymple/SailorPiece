@@ -26,7 +26,7 @@ AutoSpawnBoss={"Remotes","RequestAutoSpawn"},
 AutoSpawnAnos={"Remotes","RequestAutoSpawnAnos"},
 AutoSpawnStrongest={"Remotes","RequestAutoSpawnStrongest"},
 }
-local F={AutoFarmLevel=false,HeightOffset=10,TweenSpeed=100,AntiAFK=true,AutoEquip=true,AutoQuest=true,AutoSpawn=false,SelectedIsland="Auto",SkillZ=false,SkillX=false,SkillC=false,SkillV=false,SkillF=false,SkillCooldown=1.0,BossEnabled=false,SummonBossEnabled=false,GilgameshDiff="Normal",BlessedMaidenDiff="Normal",AnosDiff="Normal",StrongestTodayDiff="Normal",StrongestHistoryDiff="Normal",AutoChest=false,FarmMode="Plank",MoveMode="Tween",OffsetDist=5,AutoMerchant=false,MerchNotify=true,DungeonQuest=false}
+local F={AutoFarmLevel=false,HeightOffset=10,TweenSpeed=100,AntiAFK=true,AutoEquip=true,AutoQuest=true,AutoSpawn=false,SelectedIsland="Auto",SkillZ=false,SkillX=false,SkillC=false,SkillV=false,SkillF=false,SkillCooldown=1.0,BossEnabled=false,SummonBossEnabled=false,GilgameshDiff="Normal",BlessedMaidenDiff="Normal",AnosDiff="Normal",StrongestTodayDiff="Normal",StrongestHistoryDiff="Normal",AutoChest=false,FarmMode="Plank",MoveMode="Tween",OffsetDist=5,AutoMerchant=false,MerchNotify=true,DungeonQuest=false,HogyokuQuest=false}
 ---------- CONSTANTS & DATA ----------
 S.ICON="rbxthumb://type=AvatarHeadShot&id=583572860&w=420&h=420"
 S.DISCORD="https://discord.gg/B3PurfCy"
@@ -115,9 +115,12 @@ S.AutoSpawnActive={}
 S.ButtonBorderStrokes={}
 S.DungeonStep=0 S.DungeonCollected={} S.NoclipActive=false
 S.DungeonPieceIslands={"Starter","Jungle","Desert","Snow","Shibuya","HuecoMundo"}
+S.HogyokuStep=0 S.HogyokuCollected={}
+S.HogyokuFragmentIslands={"Snow","Shibuya","HuecoMundo","Shinjuku","Slime","Judgement"}
 S.SummonBossIslandMap={}
 for _,b in ipairs(S.SummonBosses) do S.SummonBossIslandMap[b.Name]=b.Island or S.BOSS_ISLAND_PORTAL end
 ---------- FUNCTIONS ----------
+-- ===== CORE UTILITY FUNCTIONS (paths, math, cache, roots) =====
 fn.PortalDisplayName=function(p) return S.PortalDisplayNames[p] or p end
 fn.Conn=function(c) table.insert(S.Conns,c) return c end
 fn.Typing=function() return UserInputService:GetFocusedTextBox()~=nil end
@@ -209,6 +212,7 @@ fn.WaitChar=function() if fn.IsAlive() then return true end local t=tick() while
 fn.IsPlayer=function(m) for _,p in ipairs(Players:GetPlayers()) do if p.Character==m then return true end end return false end
 fn.ShouldIgnore=function(n) local lo=n:lower() for _,ig in ipairs(S.IgnoreList) do if lo:find(ig,1,true) then return true end end if lo:match("boss$") then return true end return false end
 fn.MatchEnemy=function(name,island) if not island then return false end local lo=name:lower() for _,e in ipairs(island.Enemies) do local el=e:lower() if lo:sub(1,#el)==el then return true end end return false end
+-- ===== QUEST MANAGEMENT (abandon, accept, repeat, completion) =====
 fn.AbandonAllQuests=function()
     S.QState="NONE"
     if not S.CachedQuestAbandon then
@@ -222,6 +226,7 @@ fn.AbandonAllQuests=function()
     if ab then
         pcall(function() ab:FireServer("repeatable") end)
         pcall(function() ab:FireServer() end)
+        for _,n in ipairs({"HogyokuUnlock","HogyokuQuestNPC","Hogyoku","HogyokuFragment","HogyokuQuest","SoulSocietyUnlock","SoulSociety"}) do pcall(function() ab:FireServer(n) end) end
         for _,isl in ipairs(S.Islands) do pcall(function() ab:FireServer(isl.QuestNPC) end) end
     end
 end
@@ -230,6 +235,7 @@ fn.FullReset=function()
     fn.AbandonAllQuests()
     S.LastQuestAccept=0 S.BossTargetName=nil S.BossFight=false S.BossTPDone=false S.LastBossTP=0 S.BossTPRetries=0 S.BossCurrentIsland=nil
     S.SummonBossFight=false S.SummonBossTarget=nil S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossLockedDiff={}
+    S.HogyokuStep=0 S.HogyokuCollected={}
     pcall(function() local c=LP.Character if c then local hm=c:FindFirstChildOfClass("Humanoid") if hm then hm.PlatformStand=false end end end)
 end
 fn.DoTP=function(portal)
@@ -621,6 +627,7 @@ fn.GetGoalForEnemy=function(enemy)
     end
     return Vector3.new(pos.X,pos.Y+F.HeightOffset,pos.Z),pos
 end
+-- ===== MOVEMENT & COMBAT (tween, attack, abilities) =====
 fn.TweenTo=function(enemy)
     if not enemy then return end
     local goal,look=fn.GetGoalForEnemy(enemy) if not goal then return end
@@ -725,9 +732,10 @@ end
 if LP.Character then task.spawn(function() fn.OnCharAdded(LP.Character) end) end
 fn.Conn(LP.CharacterAdded:Connect(fn.OnCharAdded))
 fn.GetIslandNames=function() local n={"Auto"} for _,i in ipairs(S.Islands) do table.insert(n,i.Portal) end return n end
+-- ===== RENDERSTEPPED LOOP (noclip, hover lock, plank mode) =====
 fn.Conn(RunService.RenderStepped:Connect(function()
     local inBossFight=S.SummonBossFight or S.BossFight
-    local anyActive=F.AutoFarmLevel or inBossFight or F.DungeonQuest
+    local anyActive=F.AutoFarmLevel or inBossFight or F.DungeonQuest or F.HogyokuQuest
     if not anyActive then
         if S.NoclipActive then
             S.NoclipActive=false
@@ -774,6 +782,7 @@ fn.Conn(RunService.RenderStepped:Connect(function()
         hrp.AssemblyAngularVelocity=Vector3.zero
     end
 end))
+-- ===== AUTO BOSS MODE (world bosses with timer tracking) =====
 fn.ExitBossMode=function(lastBossName)
     local bi=lastBossName and fn.GetBossIsland(lastBossName)
     local savedHover=S.HoverPos
@@ -792,6 +801,7 @@ fn.ExitBossMode=function(lastBossName)
         S.Notify.new({Title="Bosses Clear!",Content="Returning to farming...",Duration=3,Icon=S.ICON})
     end
 end
+-- ===== AUTO FARM (level-based island grinding) =====
 fn.DoFarmTick=function()
     local tgtIsland=fn.GetFarmIsland()
     if not tgtIsland then
@@ -979,6 +989,7 @@ fn.DoBossTick=function()
     fn.Attack(model)
     if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() fn.EquipBothWeapons() end
 end
+-- ===== SUMMON BOSS SYSTEM (auto-spawn, difficulties, multi-boss) =====
 fn.GetSummonBossDiff=function(name)
     if name=="GilgameshBoss" then return F.GilgameshDiff end
     if name=="BlessedMaidenBoss" then return F.BlessedMaidenDiff end
@@ -1332,6 +1343,7 @@ fn.DoSummonBossTick=function()
     fn.Attack(model)
     if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() fn.EquipBothWeapons() end
 end
+-- ===== GAME SETTINGS & AUTO SKILLS =====
 fn.DisableGameAutoSkills=function()
     pcall(function()
         local r=fn.WalkPathWait(RS,3,unpack(R.Settings))
@@ -1341,6 +1353,7 @@ fn.DisableGameAutoSkills=function()
         end
     end)
 end
+-- ===== DUNGEON QUEST (Puzzle Pieces — 6 islands) =====
 fn.AbandonDungeonQuest=function()
     pcall(function()
         local ab=fn.WalkPathWait(RS,2,unpack(R.QuestAbandon))
@@ -1448,6 +1461,129 @@ fn.DoDungeonQuestTick=function()
     S.DungeonCollected[step]=true
     S.DungeonStep=step+1
 end
+-- ===== HOGYOKU QUEST =====
+fn.AbandonHogyokuQuest=function()
+    pcall(function()
+        local ab=fn.WalkPathWait(RS,2,unpack(R.QuestAbandon))
+        if ab then for _,n in ipairs({"HogyokuUnlock","HogyokuQuestNPC","Hogyoku","HogyokuFragment","HogyokuQuest","SoulSociety"}) do pcall(function() ab:FireServer(n) end) end end
+    end)
+end
+fn.FindHogyokuFragment=function(stepNum)
+    local target="hogyoku fragment #"..stepNum
+    for _,desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") and (desc.ObjectText or ""):lower()==target then return desc end
+    end
+    return nil
+end
+fn.DoHogyokuQuestTick=function()
+    if not F.HogyokuQuest then return end
+    local step=S.HogyokuStep
+    -- Step 0: TP to HuecoMundo portal
+    if step==0 then
+        fn.StopTw() fn.ClearTgt()
+        fn.ForceTP("HuecoMundo")
+        S.HogyokuStep=0.5
+        return
+    end
+    -- Step 0.5: Wait for load, find NPC, tween to it, interact
+    if step==0.5 then
+        task.wait(1) fn.WaitChar() task.wait(0.5)
+        local npc=workspace:FindFirstChild("HogyokuQuestNPC",true)
+        if not npc then task.wait(2) npc=workspace:FindFirstChild("HogyokuQuestNPC",true) end
+        if not npc then
+            S.Notify.new({Title="Hogyoku",Content="NPC not found, retrying...",Duration=2,Icon=S.ICON})
+            S.HogyokuStep=0 -- retry from TP
+            return
+        end
+        -- Get NPC position
+        local npcPos
+        if npc:IsA("BasePart") then npcPos=npc.Position end
+        if not npcPos then
+            local p=npc:FindFirstChild("HumanoidRootPart",true) or npc:FindFirstChild("Head",true)
+            if p and p:IsA("BasePart") then npcPos=p.Position end
+        end
+        if not npcPos then
+            for _,d in ipairs(npc:GetDescendants()) do if d:IsA("BasePart") then npcPos=d.Position break end end
+        end
+        if not npcPos then
+            pcall(function() npcPos=npc:GetPivot().Position end)
+        end
+        if not npcPos then S.HogyokuStep=0 return end
+        -- CFrame to NPC
+        local hrp=fn.PlayerHRP()
+        if hrp then hrp.CFrame=CFrame.new(npcPos+Vector3.new(0,0,3)) end
+        task.wait(0.3)
+        -- Fire prompts
+        for _,desc in ipairs(npc:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then pcall(function() fireproximityprompt(desc) end) end
+            if desc:IsA("ClickDetector") then pcall(function() fireclickdetector(desc) end) end
+        end
+        task.wait(0.5) fn.ClickYes()
+        task.wait(0.3) fn.ClickYes()
+        -- Fire prompts again for double-interact NPCs
+        for _,desc in ipairs(npc:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then pcall(function() fireproximityprompt(desc) end) end
+        end
+        task.wait(0.3) fn.ClickYes()
+        task.wait(0.3) fn.ClickYes()
+        S.HogyokuStep=1 S.HogyokuCollected={}
+        F.HogyokuQuest=true
+        task.wait(1) -- give server time to spawn fragments
+        S.Notify.new({Title="Hogyoku",Content="Quest accepted! Collecting fragments...",Duration=2,Icon=S.ICON})
+        return
+    end
+    -- All 6 collected: TP to HuecoMundo, turn in at NPC
+    if step>6 then
+        fn.StopTw() fn.ClearTgt()
+        fn.ForceTP("HuecoMundo")
+        task.wait(1) fn.WaitChar() task.wait(0.5)
+        local npc=workspace:FindFirstChild("HogyokuQuestNPC",true)
+        if npc then
+            local npcPos
+            local p=npc:FindFirstChild("HumanoidRootPart",true) or npc:FindFirstChild("Head",true)
+            if p and p:IsA("BasePart") then npcPos=p.Position end
+            if not npcPos then for _,d in ipairs(npc:GetDescendants()) do if d:IsA("BasePart") then npcPos=d.Position break end end end
+            if npcPos then local hrp=fn.PlayerHRP() if hrp then hrp.CFrame=CFrame.new(npcPos+Vector3.new(0,0,3)) end end
+            task.wait(0.3)
+            for _,desc in ipairs(npc:GetDescendants()) do
+                if desc:IsA("ProximityPrompt") then pcall(function() fireproximityprompt(desc) end) end
+            end
+            task.wait(0.3) fn.ClickYes() task.wait(0.3) fn.ClickYes()
+        end
+        F.HogyokuQuest=false S.HogyokuStep=0 S.HogyokuCollected={}
+        if S.HogyokuToggle then pcall(function() S.HogyokuToggle:SetValue(false) end) end
+        S.Notify.new({Title="Hogyoku",Content="Complete! Soul Society unlocked!",Duration=4,Icon=S.ICON})
+        return
+    end
+    -- Steps 1-6: TP to island portal, find fragment, CFrame to it, collect
+    local island=S.HogyokuFragmentIslands[step]
+    if not island then S.HogyokuStep=step+1 return end
+    if S.HogyokuCollected and S.HogyokuCollected[step] then S.HogyokuStep=step+1 return end
+    fn.StopTw() fn.ClearTgt()
+    fn.ForceTP(island)
+    task.wait(0.5) fn.WaitChar() task.wait(0.5)
+    local prompt=fn.FindHogyokuFragment(step)
+    if not prompt then task.wait(1) prompt=fn.FindHogyokuFragment(step) end
+    if not prompt then task.wait(1) prompt=fn.FindHogyokuFragment(step) end
+    if prompt then
+        local hrp=fn.PlayerHRP()
+        local par=prompt.Parent
+        if par and hrp then
+            local pos=par:IsA("BasePart") and par.Position or par:IsA("Model") and fn.ModelPos(par) or nil
+            if pos then hrp.CFrame=CFrame.new(pos+Vector3.new(0,2,0)) end
+        end
+        task.wait(0.1)
+        pcall(function() fireproximityprompt(prompt) end)
+        task.wait(0.15)
+        pcall(function() fireproximityprompt(prompt) end)
+        if not S.HogyokuCollected then S.HogyokuCollected={} end
+        S.HogyokuCollected[step]=true
+        S.HogyokuStep=step+1
+    else
+        S.Notify.new({Title="Hogyoku",Content="Fragment #"..step.." not found — retrying",Duration=2,Icon=S.ICON})
+        -- Don't advance step — retry on next tick
+    end
+end
 fn.ScanDungeonDebug=function()
     local lines={}
     table.insert(lines,"== QUEST STATE ==")
@@ -1526,6 +1662,156 @@ fn.ScanDungeonDebug=function()
     if uc==0 then table.insert(lines,"(none)") end
     return table.concat(lines,"\n")
 end
+-- ===== HOGYOKU DEBUG SCANNER =====
+fn.ScanHogyokuDebug=function()
+    local lines={}
+    table.insert(lines,"========== HOGYOKU MEGA DEBUG ==========")
+    table.insert(lines,"== QUEST STATE ==")
+    local collectedStr="" for k in pairs(S.HogyokuCollected or {}) do collectedStr=collectedStr..k.."," end
+    table.insert(lines,"Step: "..S.HogyokuStep.." | Collected: {"..collectedStr.."} | Flag: "..tostring(F.HogyokuQuest))
+    table.insert(lines,"Islands: "..table.concat(S.HogyokuFragmentIslands,", "))
+    table.insert(lines,"")
+
+    -- 1) ALL workspace top-level children
+    table.insert(lines,"== WORKSPACE TOP-LEVEL CHILDREN ==")
+    pcall(function()
+        for _,ch in ipairs(workspace:GetChildren()) do
+            table.insert(lines,ch.Name.." ["..ch.ClassName.."]")
+        end
+    end)
+    table.insert(lines,"")
+
+    -- 2) ALL objects with "hogyoku" OR "hog" OR "fragment" OR "orb" OR "shard" OR "piece" OR "puzzle" in name
+    table.insert(lines,"== KEYWORD SEARCH (hogyoku/fragment/orb/shard/piece/puzzle/soul/unlock) ==")
+    local ct=0
+    for _,desc in ipairs(workspace:GetDescendants()) do
+        local nm=(desc.Name or ""):lower()
+        if (nm:find("hogyoku") or nm:find("fragment") or nm:find("orb") or nm:find("shard") or nm:find("puzzle") and not nm:find("dungeonpuzzle")) and ct<60 then
+            ct=ct+1
+            local info=ct..") "..desc.Name.." ["..desc.ClassName.."]"
+            if desc.Parent then info=info.." in "..desc.Parent.Name end
+            if desc:IsA("BasePart") then
+                pcall(function() info=info.." Pos="..math.floor(desc.Position.X)..","..math.floor(desc.Position.Y)..","..math.floor(desc.Position.Z) end)
+                pcall(function() info=info.." Trans="..desc.Transparency end)
+            elseif desc:IsA("Model") then
+                pcall(function() local p=fn.ModelPos(desc) if p then info=info.." Pos="..math.floor(p.X)..","..math.floor(p.Y)..","..math.floor(p.Z) end end)
+            end
+            local kids={} for _,ch in ipairs(desc:GetChildren()) do table.insert(kids,ch.Name.."["..ch.ClassName.."]") end
+            if #kids>0 then info=info.." Children={"..table.concat(kids,",").."}" end
+            local hasPrompt=false
+            pcall(function() for _,ch in ipairs(desc:GetDescendants()) do if ch:IsA("ProximityPrompt") then hasPrompt=true break end end end)
+            pcall(function() if desc:FindFirstChildOfClass("ProximityPrompt") then hasPrompt=true end end)
+            info=info.." Prompt="..tostring(hasPrompt)
+            local path={} local anc=desc.Parent
+            while anc and anc~=workspace do table.insert(path,1,anc.Name) anc=anc.Parent end
+            info=info.." Path="..table.concat(path,"/")
+            table.insert(lines,info)
+        end
+    end
+    if ct==0 then table.insert(lines,"(NOTHING found with these keywords)") end
+    table.insert(lines,"")
+
+    -- 3) ALL ProximityPrompts in entire workspace
+    table.insert(lines,"== EVERY PROXIMITYPROMPT IN WORKSPACE ==")
+    local pc=0
+    for _,desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") and pc<80 then
+            pc=pc+1
+            local par=desc.Parent
+            local info=pc..") Parent="..((par and par.Name) or "?").." ["..((par and par.ClassName) or "?").."]"
+            info=info.." Action="..(desc.ActionText or "").." Obj="..(desc.ObjectText or "")
+            local pos=nil
+            if par and par:IsA("BasePart") then pos=par.Position elseif par and par:IsA("Model") then pos=fn.ModelPos(par) end
+            if pos then info=info.." Pos="..math.floor(pos.X)..","..math.floor(pos.Y)..","..math.floor(pos.Z) end
+            local path={} local anc=par
+            while anc and anc~=workspace do table.insert(path,1,anc.Name) anc=anc.Parent end
+            info=info.." Path="..table.concat(path,"/")
+            table.insert(lines,info)
+        end
+    end
+    if pc==0 then table.insert(lines,"(no ProximityPrompts in workspace)") end
+    table.insert(lines,"")
+
+    -- 4) Player leaderstats / quest data
+    table.insert(lines,"== PLAYER DATA (leaderstats/QuestData/values) ==")
+    pcall(function()
+        for _,ch in ipairs(LP:GetChildren()) do
+            if ch:IsA("Folder") or ch:IsA("StringValue") or ch:IsA("IntValue") or ch:IsA("NumberValue") or ch:IsA("BoolValue") or ch:IsA("ObjectValue") then
+                local info=ch.Name.." ["..ch.ClassName.."]"
+                pcall(function() info=info.." Val="..tostring(ch.Value) end)
+                table.insert(lines,info)
+                if ch:IsA("Folder") then
+                    for _,sub in ipairs(ch:GetChildren()) do
+                        local si="  "..sub.Name.." ["..sub.ClassName.."]"
+                        pcall(function() si=si.." Val="..tostring(sub.Value) end)
+                        table.insert(lines,si)
+                    end
+                end
+            end
+        end
+    end)
+    table.insert(lines,"")
+
+    -- 5) ALL remotes in ReplicatedStorage
+    table.insert(lines,"== ALL REMOTES IN REPLICATEDSTORAGE ==")
+    local rc=0
+    pcall(function()
+        for _,desc in ipairs(RS:GetDescendants()) do
+            if desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction") then
+                rc=rc+1 table.insert(lines,rc..") "..desc.Name.." ["..desc.ClassName.."] in "..(desc.Parent and desc.Parent.Name or "?"))
+            end
+        end
+    end)
+    if rc==0 then table.insert(lines,"(none)") end
+    table.insert(lines,"")
+
+    -- 6) NPCs near player
+    table.insert(lines,"== NPCs NEAR PLAYER (<500 studs) ==")
+    local nc=0
+    pcall(function()
+        local hrp=fn.PlayerHRP()
+        if hrp then
+            for _,desc in ipairs(workspace:GetDescendants()) do
+                if desc:IsA("Model") and desc:FindFirstChildOfClass("Humanoid") and desc~=LP.Character and nc<30 then
+                    local pos=fn.ModelPos(desc)
+                    if pos and (hrp.Position-pos).Magnitude<500 then
+                        nc=nc+1
+                        local d=math.floor((hrp.Position-pos).Magnitude)
+                        local hasPrompt=false
+                        for _,ch in ipairs(desc:GetDescendants()) do if ch:IsA("ProximityPrompt") then hasPrompt=true break end end
+                        table.insert(lines,nc..") "..desc.Name.." d="..d.." Prompt="..tostring(hasPrompt))
+                    end
+                end
+            end
+        end
+    end)
+    if nc==0 then table.insert(lines,"(none)") end
+    table.insert(lines,"")
+
+    -- 7) Quest UI
+    table.insert(lines,"== QUEST UI (PlayerGui — hogyoku/fragment/quest/unlock/soul/collect) ==")
+    local uc=0
+    pcall(function()
+        local pg=LP:FindFirstChild("PlayerGui") if not pg then return end
+        for _,desc in ipairs(pg:GetDescendants()) do
+            if (desc:IsA("TextLabel") or desc:IsA("TextButton") or desc:IsA("Frame") or desc:IsA("ImageLabel")) and uc<30 then
+                local txt="" pcall(function() txt=(desc.Text or ""):lower() end)
+                local nm=(desc.Name or ""):lower()
+                if txt:find("hogyoku") or txt:find("fragment") or txt:find("quest") or txt:find("unlock") or txt:find("soul") or txt:find("collect") or txt:find("orb")
+                    or nm:find("hogyoku") or nm:find("fragment") or nm:find("quest") or nm:find("unlock") or nm:find("soul") or nm:find("collect") or nm:find("orb") then
+                    uc=uc+1
+                    local info=desc.Name.." ["..desc.ClassName.."]"
+                    pcall(function() if desc.Text and #desc.Text>0 then info=info.." Text=\""..(desc.Text):sub(1,120).."\"" end end)
+                    pcall(function() if desc.Visible~=nil then info=info.." Vis="..tostring(desc.Visible) end end)
+                    table.insert(lines,uc..") "..info)
+                end
+            end
+        end
+    end)
+    if uc==0 then table.insert(lines,"(none)") end
+
+    return table.concat(lines,"\n")
+end
 ---------- UI (in do block to scope locals) ----------
 do
 S.Hub=loadstring(game:HttpGet("https://raw.githubusercontent.com/4lpaca-pin/CompKiller/refs/heads/main/src/source.luau"))()
@@ -1552,6 +1838,13 @@ local QSec=QTab:DrawSection({Name="Unlock Quests",Position="left"})
 S.DungeonToggle=QSec:AddToggle({Name="Locate Dungeon Pieces",Flag="DungeonQuest",Default=false,Callback=function(v)
     F.DungeonQuest=v
     if v then
+        -- Mutual exclusion: only one quest at a time
+        if F.HogyokuQuest then
+            F.HogyokuQuest=false S.HogyokuStep=0 S.HogyokuCollected={}
+            fn.AbandonHogyokuQuest()
+            if S.HogyokuToggle then pcall(function() S.HogyokuToggle:SetValue(false) end) end
+            S.Notify.new({Title="Hogyoku Quest",Content="Disabled — only one quest at a time",Duration=3,Icon=S.ICON})
+        end
         -- Full reset on every enable — stress-test safe
         S.DungeonStep=0 S.DungeonCollected={}
         fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
@@ -1572,6 +1865,43 @@ S.DungeonToggle=QSec:AddToggle({Name="Locate Dungeon Pieces",Flag="DungeonQuest"
 end})
 S.DungeonToggle.Link:AddHelper({Text="Collect 6 puzzle pieces across islands"})
 QSec:AddParagraph({Title="Info",Content="1. Accepts quest remotely\n2. Collects 6 pieces (Starter→Jungle→Desert→Snow→Shibuya→Hueco Mundo)\n3. Returns to Dungeon Master\n\nPriority: overrides all other modes"})
+S.HogyokuToggle=QSec:AddToggle({Name="Locate Hogyoku Fragments",Flag="HogyokuQuest",Default=false,Callback=function(v)
+    F.HogyokuQuest=v
+    if v then
+        -- Mutual exclusion: only one quest at a time
+        if F.DungeonQuest then
+            F.DungeonQuest=false S.DungeonStep=0 S.DungeonCollected={}
+            fn.AbandonDungeonQuest()
+            if S.DungeonToggle then pcall(function() S.DungeonToggle:SetValue(false) end) end
+            S.Notify.new({Title="Dungeon Quest",Content="Disabled — only one quest at a time",Duration=3,Icon=S.ICON})
+        end
+        S.HogyokuStep=0 S.HogyokuCollected={}
+        fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+        S.LastTP=0 S.TPCount=0 S.TPReset=tick()
+        if S.SummonBossFight then fn.ExitSummonBossMode() end
+        if S.BossFight then S.BossFight=false S.BossTargetName=nil S.BossTPDone=false end
+        fn.ClearTgt() S.HoverPos=nil
+        S.Notify.new({Title="Hogyoku Quest",Content="Starting Hogyoku fragment quest",Duration=3,Icon=S.ICON})
+    else
+        S.HogyokuStep=0 S.HogyokuCollected={}
+        fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+        S.LastTP=0 S.TPCount=0 S.TPReset=tick()
+        fn.AbandonHogyokuQuest()
+        fn.ClearTgt() S.HoverPos=nil
+        S.Notify.new({Title="Hogyoku Quest",Content="Quest abandoned",Duration=3,Icon=S.ICON})
+    end
+end})
+S.HogyokuToggle.Link:AddHelper({Text="Collect 5 Hogyoku fragments to unlock Soul Society"})
+QSec:AddParagraph({Title="Hogyoku Info",Content="1. Accepts quest remotely\n2. Collects 5 fragments (Snow→Shibuya→Hueco Mundo→Slime→Judgement)\n3. Returns to Gin (Hueco Mundo)\n\nPriority: overrides all other modes"})
+local QDbgSec=QTab:DrawSection({Name="Quest Debug",Position="right"})
+QDbgSec:AddButton({Name="Scan Dungeon Debug",Callback=function()
+    local result=fn.ScanDungeonDebug()
+    S.Notify.new({Title="DUNGEON DEBUG",Content=result:sub(1,500),Duration=20,Icon=S.ICON})
+end})
+QDbgSec:AddButton({Name="Scan Hogyoku Debug",Callback=function()
+    local result=fn.ScanHogyokuDebug()
+    S.Notify.new({Title="HOGYOKU DEBUG",Content=result:sub(1,500),Duration=20,Icon=S.ICON})
+end})
 local FSec=FTab:DrawSection({Name="Auto Farm Level",Position="left"})
 S.FarmToggle=FSec:AddToggle({Name="Auto Farm Level",Flag="AutoFarmLevel",Default=false,Callback=function(v) F.AutoFarmLevel=v if v then S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.QState="NONE" S.CurTarget=nil S.LockTarget=nil S.HoverPos=nil S.LastEnemy=0 else fn.FullReset() end end})
 S.FarmKeybind=S.FarmToggle.Link:AddKeybind({Default="V",Flag="FarmLevelKeybind",Callback=function() end})
@@ -1745,7 +2075,7 @@ task.spawn(function()
     while S.Running do
         repeat
             local isSummonActive=fn.HasAnySummonBossEnabled()
-            if not F.AutoFarmLevel and not isSummonActive and not F.DungeonQuest then task.wait(0.3) break end
+            if not F.AutoFarmLevel and not isSummonActive and not F.DungeonQuest and not F.HogyokuQuest then task.wait(0.3) break end
             if not fn.IsAlive() then
                 fn.ClearTgt() S.HoverPos=nil fn.WaitChar() task.wait(0.3)
                 if F.AutoEquip then fn.EquipBothWeapons() task.wait(0.2) end
@@ -1753,11 +2083,17 @@ task.spawn(function()
                 S.LastBossTP=0 S.BossTPDone=false S.LastSummonBossTP=0 S.SummonBossTPDone=false
             end
             if not fn.IsAlive() then task.wait(0.3) break end
-            -- Dungeon Quest gets HIGHEST priority — force-exit other modes
+            -- Quests get HIGHEST priority — force-exit other modes (only one active at a time)
             if F.DungeonQuest then
                 if S.SummonBossFight then fn.ExitSummonBossMode() end
                 if S.BossFight then S.BossFight=false S.BossTargetName=nil fn.ClearTgt() S.HoverPos=nil end
                 local dok,derr=pcall(fn.DoDungeonQuestTick) if not dok then S.Notify.new({Title="Dungeon Error",Content=tostring(derr):sub(1,80),Duration=5,Icon=S.ICON}) end
+                task.wait(0.2) break
+            end
+            if F.HogyokuQuest then
+                if S.SummonBossFight then fn.ExitSummonBossMode() end
+                if S.BossFight then S.BossFight=false S.BossTargetName=nil fn.ClearTgt() S.HoverPos=nil end
+                local hok,herr=pcall(fn.DoHogyokuQuestTick) if not hok then S.Notify.new({Title="Hogyoku Error",Content=tostring(herr):sub(1,80),Duration=5,Icon=S.ICON}) end
                 task.wait(0.2) break
             end
             if not isSummonActive and S.SummonBossFight then fn.ExitSummonBossMode() end
