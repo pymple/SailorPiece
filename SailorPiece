@@ -22,8 +22,9 @@ QuestRepeat={"RemoteEvents","QuestRepeat"},
 SummonBoss={"Remotes","RequestSummonBoss"},
 AnosBoss={"Remotes","RequestSpawnAnosBoss"},
 StrongestBoss={"Remotes","RequestSpawnStrongestBoss"},
+AutoSpawnBoss={"Remotes","RequestAutoSpawn"},
 }
-local F={AutoFarmLevel=false,HeightOffset=10,TweenSpeed=100,AntiAFK=true,AutoEquip=true,AutoQuest=true,AutoSpawn=false,SelectedIsland="Auto",SkillZ=false,SkillX=false,SkillC=false,SkillV=false,SkillB=false,SkillCooldown=1.0,BossEnabled=false,SummonBossEnabled=false,GilgameshDiff="Normal",BlessedMaidenDiff="Normal",AnosDiff="Normal",StrongestTodayDiff="Normal",StrongestHistoryDiff="Normal",AutoChest=false,FarmMode="Plank",MoveMode="Tween",OffsetDist=5,AutoMerchant=false,MerchNotify=true}
+local F={AutoFarmLevel=false,HeightOffset=10,TweenSpeed=100,AntiAFK=true,AutoEquip=true,AutoQuest=true,AutoSpawn=false,SelectedIsland="Auto",SkillZ=false,SkillX=false,SkillC=false,SkillV=false,SkillF=false,SkillCooldown=1.0,BossEnabled=false,SummonBossEnabled=false,GilgameshDiff="Normal",BlessedMaidenDiff="Normal",AnosDiff="Normal",StrongestTodayDiff="Normal",StrongestHistoryDiff="Normal",AutoChest=false,FarmMode="Plank",MoveMode="Tween",OffsetDist=5,AutoMerchant=false,MerchNotify=true,DungeonQuest=false}
 ---------- CONSTANTS & DATA ----------
 S.ICON="rbxthumb://type=AvatarHeadShot&id=583572860&w=420&h=420"
 S.DISCORD="https://discord.gg/B3PurfCy"
@@ -82,7 +83,8 @@ for _,item in ipairs(S.MerchantItems) do S.FM[item]=false end
 S.Kills=0 S.BossKills=0
 S.Hub=nil S.Notify=nil S.Win=nil S.CfgMgr=nil
 S.FarmToggle=nil S.BossToggle=nil S.SummonBossToggle=nil
-S.SkillToggles={} S.SkillKeys={"SkillZ","SkillX","SkillC","SkillV","SkillB"} S.AllSkillsToggle=nil
+S.FarmKeybind=nil S.BossKeybind=nil S.SummonBossKeybind=nil S.AllSkillsKeybind=nil
+S.SkillToggles={} S.SkillKeys={"SkillZ","SkillX","SkillC","SkillV","SkillF"} S.AllSkillsToggle=nil
 S.Running=true
 S.CurIsland=nil S.CurTarget=nil
 S.Conns={}
@@ -106,7 +108,10 @@ S.SummonBossTPDone=false S.LastSummonBossTP=0
 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil
 S.SummonBossOrder=0 S.SummonBossFailCount={}
 S.SummonBossFireTime={}
+S.AutoSpawnActive={}
 S.ButtonBorderStrokes={}
+S.DungeonStep=0 S.DungeonTPDone=false S.LastDungeonTP=0 S.DungeonQuestActive=false S.DungeonSearchFails=0 S.NoclipActive=false
+S.DungeonPieceIslands={"Starter","Jungle","Desert","Snow","Shibuya","HuecoMundo"}
 S.SummonBossIslandMap={}
 for _,b in ipairs(S.SummonBosses) do S.SummonBossIslandMap[b.Name]=b.Island or S.BOSS_ISLAND_PORTAL end
 ---------- FUNCTIONS ----------
@@ -186,7 +191,16 @@ fn.GetLevel=function()
 end
 fn.IslandForLevel=function(lvl) for _,i in ipairs(S.Islands) do if lvl<i.FarmUntil then return i end end return S.Islands[#S.Islands] end
 fn.IslandByName=function(n) for _,i in ipairs(S.Islands) do if i.Portal==n then return i end end return nil end
-fn.GetFarmIsland=function() local lvl=fn.GetLevel() if lvl==0 then return nil end if F.SelectedIsland=="Auto" then return fn.IslandForLevel(lvl) end return fn.IslandByName(F.SelectedIsland) or fn.IslandForLevel(lvl) end
+fn.GetFarmIsland=function()
+    local lvl=fn.GetLevel()
+    if lvl==0 then
+        task.wait(0.5) lvl=fn.GetLevel()
+        if lvl==0 then task.wait(1) lvl=fn.GetLevel() end
+        if lvl==0 then return nil end
+    end
+    if F.SelectedIsland=="Auto" then return fn.IslandForLevel(lvl) end
+    return fn.IslandByName(F.SelectedIsland) or fn.IslandForLevel(lvl)
+end
 fn.IsAlive=function() local c=LP.Character if not c then return false end local h=c:FindFirstChild("HumanoidRootPart") local hm=c:FindFirstChildOfClass("Humanoid") return h~=nil and hm~=nil and hm.Health>0 end
 fn.WaitChar=function() if fn.IsAlive() then return true end local t=tick() while tick()-t<20 do if fn.IsAlive() then task.wait(0.5) return true end task.wait(0.15) end return false end
 fn.IsPlayer=function(m) for _,p in ipairs(Players:GetPlayers()) do if p.Character==m then return true end end return false end
@@ -227,7 +241,11 @@ end
 fn.ForceTP=function(portal)
     S.LastTP=0 S.TPCount=0 S.TPReset=tick()
     local ok=false
-    pcall(function() fn.WalkPathWait(RS,3,unpack(R.TP)):FireServer(portal) ok=true end)
+    pcall(function() fn.WalkPathWait(RS,5,unpack(R.TP)):FireServer(portal) ok=true end)
+    if not ok then
+        task.wait(1)
+        pcall(function() fn.WalkPathWait(RS,5,unpack(R.TP)):FireServer(portal) ok=true end)
+    end
     S.LastTP=tick() S.TPCount=1
     return ok
 end
@@ -529,13 +547,59 @@ fn.GetBossTimerText=function()
     return table.concat(lines,"\n")
 end
 fn.GetTool=function() local c=LP.Character if not c then return nil end for _,ch in ipairs(c:GetChildren()) do if ch:IsA("Tool") then return ch end end return nil end
+fn.GetAllTools=function() local c=LP.Character if not c then return {} end local t={} for _,ch in ipairs(c:GetChildren()) do if ch:IsA("Tool") then table.insert(t,ch) end end return t end
+fn.GetToolFromBackpack=function(toolType)
+    local bp=LP:FindFirstChild("Backpack") if not bp then return nil end
+    for _,c in ipairs(bp:GetChildren()) do
+        if c:IsA("Tool") then
+            local ttObj=c:FindFirstChild("ToolType")
+            local tt=(ttObj and ttObj.Value) or c:GetAttribute("ToolType") or nil
+            if tt and tt:lower()==toolType:lower() then return c end
+            local nm=c.Name:lower()
+            if toolType:lower()=="melee" and nm=="combat" then return c end
+            if toolType:lower()=="sword" and nm~="combat" then return c end
+        end
+    end
+    return nil
+end
 fn.EquipSword=function()
-    local eq=fn.GetTool()
-    if eq and eq.Name:lower()~="combat" then return end
-    if eq and eq.Name:lower()=="combat" then local hm=LP.Character and LP.Character:FindFirstChildOfClass("Humanoid") if hm then hm:UnequipTools() end task.wait(0.15) end
+    local c=LP.Character if not c then return end
+    local hm=c:FindFirstChildOfClass("Humanoid") if not hm then return end
     local bp=LP:FindFirstChild("Backpack") if not bp then return end
-    local hm=LP.Character and LP.Character:FindFirstChildOfClass("Humanoid") if not hm then return end
-    for _,c in ipairs(bp:GetChildren()) do if c:IsA("Tool") and c.Name:lower()~="combat" then hm:EquipTool(c) return end end
+    local equipped=fn.GetAllTools()
+    local hasSword=false
+    for _,t in ipairs(equipped) do if t.Name:lower()~="combat" then hasSword=true end end
+    if hasSword then return end
+    for _,t in ipairs(equipped) do if t.Name:lower()=="combat" then hm:UnequipTools() task.wait(0.15) break end end
+    for _,ch in ipairs(bp:GetChildren()) do if ch:IsA("Tool") and ch.Name:lower()~="combat" then hm:EquipTool(ch) return end end
+end
+fn.EquipBothWeapons=function()
+    local c=LP.Character if not c then return end
+    local hm=c:FindFirstChildOfClass("Humanoid") if not hm then return end
+    local bp=LP:FindFirstChild("Backpack") if not bp then return end
+    local equipped=fn.GetAllTools()
+    local hasMelee,hasSword=false,false
+    for _,t in ipairs(equipped) do
+        if t.Name:lower()=="combat" then hasMelee=true else hasSword=true end
+    end
+    if hasMelee and hasSword then return end
+    local allTools={}
+    for _,ch in ipairs(bp:GetChildren()) do if ch:IsA("Tool") then table.insert(allTools,ch) end end
+    for _,t in ipairs(equipped) do table.insert(allTools,t) end
+    local melee,sword=nil,nil
+    for _,t in ipairs(allTools) do
+        if t.Name:lower()=="combat" then melee=t
+        elseif not sword then sword=t end
+    end
+    if melee and sword then
+        hm:UnequipTools() task.wait(0.1)
+        melee.Parent=c
+        sword.Parent=c
+    elseif sword and not melee then
+        sword.Parent=c
+    elseif melee and not sword then
+        melee.Parent=c
+    end
 end
 fn.GetGoalForEnemy=function(enemy)
     local pos=fn.ModelPos(enemy) if not pos then return nil,nil end
@@ -591,7 +655,7 @@ fn.TweenToPoint=function(goal)
 end
 fn.FireAbilities=function()
     if tick()-S.LastSkill<F.SkillCooldown then return end
-    if not(F.SkillZ or F.SkillX or F.SkillC or F.SkillV or F.SkillB) then return end
+    if not(F.SkillZ or F.SkillX or F.SkillC or F.SkillV or F.SkillF) then return end
     S.LastSkill=tick()
     pcall(function()
         local r=fn.WalkPathWait(RS,2,unpack(R.Ability))
@@ -599,16 +663,19 @@ fn.FireAbilities=function()
         if F.SkillX then pcall(function() r:FireServer(2) end) end
         if F.SkillC then pcall(function() r:FireServer(3) end) end
         if F.SkillV then pcall(function() r:FireServer(4) end) end
-        if F.SkillB then pcall(function() r:FireServer(5) end) end
+        if F.SkillF then pcall(function() r:FireServer(5) end) end
     end)
 end
 fn.Attack=function(tgt)
     local tr=fn.Root(tgt)
     pcall(function() fn.WalkPathWait(RS,2,unpack(R.Hit)):FireServer(tgt) end)
-    local tool=fn.GetTool()
-    if tool then
+    local tools=fn.GetAllTools()
+    for _,tool in ipairs(tools) do
         pcall(function() tool:Activate() end)
-        if tgt and tr then local handle=tool:FindFirstChild("Handle") if handle then pcall(function() firetouchinterest(handle,tr,0) task.delay(0.06,function() pcall(function() firetouchinterest(handle,tr,1) end) end) end) end end
+        if tgt and tr then
+            local handle=tool:FindFirstChild("Handle")
+            if handle then pcall(function() firetouchinterest(handle,tr,0) task.delay(0.06,function() pcall(function() firetouchinterest(handle,tr,1) end) end) end) end
+        end
     end
     fn.FireAbilities()
 end
@@ -635,19 +702,28 @@ fn.OnCharAdded=function(char)
     S.CharHum=nil
     char:WaitForChild("Humanoid",10) S.CharHum=char:FindFirstChildOfClass("Humanoid")
     S.LockTarget=nil S.TweenOn=false S.TweenTarget=nil S.HoverPos=nil
-    if F.AutoEquip then task.spawn(function() task.wait(0.5) for _=1,10 do task.wait(0.3) local eq=fn.GetTool() if eq and eq.Name:lower()~="combat" then break end fn.EquipSword() end end) end
+    if F.AutoEquip then task.spawn(function() task.wait(0.5) for _=1,10 do task.wait(0.3) fn.EquipBothWeapons() local tools=fn.GetAllTools() if #tools>=2 then break end if #tools>=1 then local hasSword=false for _,t in ipairs(tools) do if t.Name:lower()~="combat" then hasSword=true end end if hasSword then break end end end end) end
 end
 if LP.Character then task.spawn(function() fn.OnCharAdded(LP.Character) end) end
 fn.Conn(LP.CharacterAdded:Connect(fn.OnCharAdded))
 fn.GetIslandNames=function() local n={"Auto"} for _,i in ipairs(S.Islands) do table.insert(n,i.Portal) end return n end
 fn.Conn(RunService.RenderStepped:Connect(function()
     local inBossFight=S.SummonBossFight or S.BossFight
-    if not F.AutoFarmLevel and not inBossFight then return end
+    local anyActive=F.AutoFarmLevel or inBossFight or F.DungeonQuest
+    if not anyActive then
+        if S.NoclipActive then
+            S.NoclipActive=false
+            pcall(function() local c=LP.Character if not c then return end for _,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then p.CanCollide=true end end local hm=c:FindFirstChildOfClass("Humanoid") if hm then hm.PlatformStand=false end end)
+        end
+        return
+    end
+    S.NoclipActive=true
     local c=LP.Character if not c then return end
     local hrp=c:FindFirstChild("HumanoidRootPart") if not hrp then return end
+    if tick()-S.LastCanCollide>0.2 then S.LastCanCollide=tick() for _,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then p.CanCollide=false end end end
+    do local rp=RaycastParams.new() rp.FilterType=Enum.RaycastFilterType.Exclude rp.FilterDescendantsInstances={c} local hit=workspace:Raycast(hrp.Position+Vector3.new(0,3,0),Vector3.new(0,-50,0),rp) if hit and hrp.Position.Y<hit.Position.Y+1 then hrp.CFrame=CFrame.new(hrp.Position.X,hit.Position.Y+3,hrp.Position.Z)*(hrp.CFrame-hrp.CFrame.Position) end end
     if F.FarmMode=="Plank" then
         if S.CharHum then S.CharHum.PlatformStand=true end
-        if tick()-S.LastCanCollide>1 then S.LastCanCollide=tick() for _,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then p.CanCollide=false end end end
     end
 
     if S.TweenOn then return end
@@ -699,7 +775,14 @@ fn.ExitBossMode=function(lastBossName)
     end
 end
 fn.DoFarmTick=function()
-    local tgtIsland=fn.GetFarmIsland() if not tgtIsland then return end
+    local tgtIsland=fn.GetFarmIsland()
+    if not tgtIsland then
+        if S.ConfLevel==0 then
+            S.Notify.new({Title="Waiting for Level",Content="Level not detected yet — retrying",Duration=2,Icon=S.ICON})
+        end
+        task.wait(1)
+        return
+    end
     if not S.CurIsland or S.CurIsland.Portal~=tgtIsland.Portal then
         fn.StopTw()
         S.CurIsland=tgtIsland S.IslandTPd=false S.SpawnDone=false S.QState="NONE" S.CurTarget=nil S.LockTarget=nil S.HoverPos=nil S.LastEnemy=0 S.LastQuestAccept=tick()
@@ -707,7 +790,7 @@ fn.DoFarmTick=function()
         S.Notify.new({Title="Teleporting to "..fn.PortalDisplayName(tgtIsland.Portal),Content="Lv."..fn.GetLevel().." | "..tgtIsland.QuestNPC,Duration=3,Icon=S.ICON})
     end
     if not S.IslandTPd then
-        if fn.DoTP(S.CurIsland.Portal) then
+        if fn.ForceTP(S.CurIsland.Portal) then
             S.IslandTPd=true
             local snapIsland=S.CurIsland
             task.wait(0.8)
@@ -743,7 +826,7 @@ fn.DoFarmTick=function()
         if tick()-S.LastEnemy>20 then S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0 S.HoverPos=nil end
         task.wait(0.15)
     end
-    if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() local eq=fn.GetTool() if not eq or eq.Name:lower()=="combat" then fn.EquipSword() end end
+    if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() fn.EquipBothWeapons() end
 end
 fn.DoBossTick=function()
     if not S.BossTargetName then
@@ -869,7 +952,7 @@ fn.DoBossTick=function()
     S.CurTarget=model
     fn.TweenTo(model)
     fn.Attack(model)
-    if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() local eq=fn.GetTool() if not eq or eq.Name:lower()=="combat" then fn.EquipSword() end end
+    if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() fn.EquipBothWeapons() end
 end
 fn.GetSummonBossDiff=function(name)
     if name=="GilgameshBoss" then return F.GilgameshDiff end
@@ -897,31 +980,25 @@ fn.DetectSummonError=function()
     end)
     return found
 end
-fn.FireSummonBoss=function(name)
+fn.FireAutoSpawn=function(name)
     if not S.BSF[name] then return end
+    if S.AutoSpawnActive[name] then return end
     pcall(function()
-        if name=="AnosBoss" then
-            local r=fn.WalkPathWait(RS,2,unpack(R.AnosBoss))
-            if not r then return end
-            local diff=fn.GetSummonBossDiff(name) or "Normal"
-            r:FireServer("Anos",diff)
-        elseif name=="StrongestTodayBoss" then
-            local r=fn.WalkPathWait(RS,2,unpack(R.StrongestBoss))
-            if not r then return end
-            local diff=fn.GetSummonBossDiff(name) or "Normal"
-            r:FireServer("StrongestToday",diff)
-        elseif name=="StrongestHistoryBoss" then
-            local r=fn.WalkPathWait(RS,2,unpack(R.StrongestBoss))
-            if not r then return end
-            local diff=fn.GetSummonBossDiff(name) or "Normal"
-            r:FireServer("StrongestHistory",diff)
-        else
-            local r=fn.WalkPathWait(RS,2,unpack(R.SummonBoss))
-            if not r then return end
-            local diff=fn.GetSummonBossDiff(name)
-            if diff then r:FireServer(name,diff) else r:FireServer(name) end
-        end
+        local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnBoss))
+        if not r then return end
+        local diff=fn.GetSummonBossDiff(name) or "Normal"
+        r:FireServer(name,diff)
+        S.AutoSpawnActive[name]=true
     end)
+end
+fn.DisableAutoSpawn=function(name)
+    S.AutoSpawnActive[name]=nil
+end
+fn.DisableAllAutoSpawn=function()
+    S.AutoSpawnActive={}
+end
+fn.FireSummonBoss=function(name)
+    fn.FireAutoSpawn(name)
 end
 fn.CheckSummonResult=function(name,timeout)
     local deadline=tick()+(timeout or 3)
@@ -964,6 +1041,7 @@ fn.HasAnySummonBossEnabled=function()
     return false
 end
 fn.ExitSummonBossMode=function()
+    fn.DisableAllAutoSpawn()
     S.SummonBossFight=false S.SummonBossTarget=nil S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossFireTime={}
     fn.ClearTgt() S.HoverPos=nil
     S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0 S.LastTP=0
@@ -1021,22 +1099,14 @@ fn.DoSummonBossTick=function()
     end
     local function SummonAllEnabled()
         for _,b in ipairs(S.SummonBosses) do
-            if S.BSF[b.Name] and not S.SummonBossCommitted[b.Name] and fn.GetSummonBossIsland(b.Name)==S.SummonBossCurrentIsland then
-                fn.FireSummonBoss(b.Name)
-                S.SummonBossFireTime[b.Name]=tick()
-                S.SummonBossOrder=S.SummonBossOrder+1
-                S.SummonBossCommitted[b.Name]=S.SummonBossOrder
-                task.wait(0.3)
-                local result=fn.CheckSummonResult(b.Name,2.5)
-                if result==false then
-                    S.SummonBossCommitted[b.Name]=nil
-                    S.SummonBossFailCount[b.Name]=10
-                    S.BSF[b.Name]=false
-                    local tgl=S.BSFToggle[b.Name]
-                    if tgl then pcall(function() tgl:SetValue(false) end) end
-                    S.Notify.new({Title="No Materials",Content=(S.SummonBossDisplay[b.Name] or b.Name).." disabled — no materials",Duration=5,Icon=S.ICON})
+            if S.BSF[b.Name] and fn.GetSummonBossIsland(b.Name)==S.SummonBossCurrentIsland then
+                fn.FireAutoSpawn(b.Name)
+                if not S.SummonBossCommitted[b.Name] then
+                    S.SummonBossFireTime[b.Name]=tick()
+                    S.SummonBossOrder=S.SummonBossOrder+1
+                    S.SummonBossCommitted[b.Name]=S.SummonBossOrder
                 end
-                task.wait(0.1)
+                task.wait(0.15)
             end
         end
     end
@@ -1163,21 +1233,9 @@ fn.DoSummonBossTick=function()
         S.SummonBossFailCount[deadName]=0
         S.SummonBossTarget=nil fn.ClearTgt()
         if S.BSF[deadName] and fn.GetSummonBossIsland(deadName)==S.SummonBossCurrentIsland then
-            task.wait(0.3)
-            fn.FireSummonBoss(deadName)
             S.SummonBossFireTime[deadName]=tick()
             S.SummonBossOrder=S.SummonBossOrder+1
             S.SummonBossCommitted[deadName]=S.SummonBossOrder
-            task.wait(0.3)
-            local result=fn.CheckSummonResult(deadName,2.5)
-            if result==false then
-                S.SummonBossCommitted[deadName]=nil
-                S.SummonBossFailCount[deadName]=10
-                S.BSF[deadName]=false
-                local tgl=S.BSFToggle[deadName]
-                if tgl then pcall(function() tgl:SetValue(false) end) end
-                S.Notify.new({Title="No Materials",Content=(S.SummonBossDisplay[deadName] or deadName).." disabled — no materials",Duration=5,Icon=S.ICON})
-            end
         end
         local nextName,nextModel=fn.AcquireSummonBossFast(deadName,4)
         S.SummonBossTarget=nextName
@@ -1194,7 +1252,7 @@ fn.DoSummonBossTick=function()
     S.CurTarget=model
     fn.TweenTo(model)
     fn.Attack(model)
-    if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() local eq=fn.GetTool() if not eq or eq.Name:lower()=="combat" then fn.EquipSword() end end
+    if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() fn.EquipBothWeapons() end
 end
 fn.DisableGameAutoSkills=function()
     pcall(function()
@@ -1204,6 +1262,217 @@ fn.DisableGameAutoSkills=function()
             pcall(function() r:FireServer(skill,false) end) task.wait(0.05)
         end
     end)
+end
+fn.AbandonDungeonQuest=function()
+    pcall(function()
+        local ab=fn.WalkPathWait(RS,2,unpack(R.QuestAbandon))
+        if ab then ab:FireServer("DungeonUnlock") end
+    end)
+end
+fn.AcceptDungeonQuest=function()
+    -- Try QuestAccept remote with dungeon-related args
+    pcall(function()
+        local qa=fn.WalkPathWait(RS,2,unpack(R.QuestAccept))
+        if qa then
+            for _,arg in ipairs({"DungeonUnlock","DungeonMaster","Dungeon","DungeonQuest","dungeon","DungeonNPC"}) do
+                pcall(function() qa:FireServer(arg) end) task.wait(0.1)
+            end
+        end
+    end)
+    task.wait(0.3) fn.ClickYes() task.wait(0.2) fn.ClickYes()
+    -- Try ProximityPrompt on any dungeon NPC
+    pcall(function()
+        local npc=nil
+        for _,desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") then
+                local par=desc.Parent
+                local name=(par and par.Name or ""):lower()
+                if name:find("dungeon") then npc=desc break end
+                if par and par.Parent then
+                    local pname=(par.Parent.Name or ""):lower()
+                    if pname:find("dungeon") then npc=desc break end
+                end
+            end
+        end
+        if npc then
+            local hrp=fn.PlayerHRP()
+            local pp=npc.Parent
+            local pos=nil
+            if pp and pp:IsA("BasePart") then pos=pp.Position
+            elseif pp and pp:IsA("Model") then pos=fn.ModelPos(pp) end
+            if hrp and pos then hrp.CFrame=CFrame.new(pos+Vector3.new(0,3,0)) task.wait(0.3) end
+            pcall(function() fireproximityprompt(npc) end)
+            task.wait(0.5) fn.ClickYes() task.wait(0.3) fn.ClickYes()
+        end
+    end)
+end
+fn.FindDungeonPiece=function(n)
+    local target="Dungeon Piece #"..n
+    local ns=tostring(n)
+    -- Pass 1: exact "Dungeon Piece #N" in name/ObjectText/billboard
+    for _,desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") then
+            if desc.ObjectText and desc.ObjectText:find(target,1,true) then return desc end
+            local par=desc.Parent
+            if par then
+                if par.Name==target then return desc end
+                if par.Parent and par.Parent.Name==target then return desc end
+                local bill=par:FindFirstChildOfClass("BillboardGui")
+                if bill then for _,ch in ipairs(bill:GetDescendants()) do if ch:IsA("TextLabel") and (ch.Text or ""):find(target,1,true) then return desc end end end
+            end
+        end
+    end
+    -- Pass 2: "Dungeon" + "#N" in parent/grandparent (must have "Dungeon" AND "#N" pattern)
+    local hashN="#"..ns
+    for _,desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") then
+            local par=desc.Parent
+            if par then
+                local pn=par.Name or ""
+                if pn:find("Dungeon") and pn:find(hashN,1,true) then return desc end
+                if par.Parent then
+                    local gpn=par.Parent.Name or ""
+                    if gpn:find("Dungeon") and gpn:find(hashN,1,true) then return desc end
+                end
+            end
+            if desc.ObjectText and desc.ObjectText:find("Dungeon") and desc.ObjectText:find(hashN,1,true) then return desc end
+        end
+    end
+    return nil
+end
+fn.DoDungeonQuestTick=function()
+    if not F.DungeonQuest then return end
+    local step=S.DungeonStep
+    if step<1 then
+        S.Notify.new({Title="Dungeon Quest",Content="Going to Dungeon Island to accept quest",Duration=3,Icon=S.ICON})
+        fn.ForceTP("Dungeon")
+        task.wait(1.5)
+        fn.AcceptDungeonQuest()
+        task.wait(0.5)
+        S.DungeonStep=1 S.DungeonTPDone=false S.DungeonQuestActive=true
+        S.Notify.new({Title="Dungeon Quest",Content="Quest accepted — collecting piece #1",Duration=3,Icon=S.ICON})
+        return
+    end
+    if step>6 then
+        S.Notify.new({Title="Dungeon Quest",Content="All 6 pieces collected! Returning to Dungeon Master",Duration=4,Icon=S.ICON})
+        fn.ForceTP("Dungeon")
+        task.wait(1.5)
+        fn.AcceptDungeonQuest()
+        task.wait(0.5)
+        F.DungeonQuest=false
+        S.DungeonStep=0 S.DungeonTPDone=false S.DungeonQuestActive=false
+        if S.DungeonToggle then pcall(function() S.DungeonToggle:SetValue(false) end) end
+        S.Notify.new({Title="Dungeon Quest",Content="Complete! Dungeon unlocked.",Duration=5,Icon=S.ICON})
+        return
+    end
+    local island=S.DungeonPieceIslands[step]
+    if not island then S.DungeonStep=step+1 return end
+    if not S.DungeonTPDone then
+        if tick()-S.LastDungeonTP<3 then task.wait(0.3) return end
+        S.LastDungeonTP=tick()
+        S.Notify.new({Title="Dungeon Piece #"..step,Content="Teleporting to "..fn.PortalDisplayName(island),Duration=2,Icon=S.ICON})
+        fn.ForceTP(island)
+        task.wait(1.5)
+        S.DungeonTPDone=true
+        return
+    end
+    local prompt=fn.FindDungeonPiece(step)
+    if prompt then
+        local par=prompt.Parent
+        local pos=nil
+        if par and par:IsA("BasePart") then pos=par.Position
+        elseif par and par:IsA("Model") then pos=fn.ModelPos(par) end
+        if pos then
+            local hrp=fn.PlayerHRP()
+            if hrp and(hrp.Position-pos).Magnitude>10 then
+                fn.TweenToPoint(Vector3.new(pos.X,pos.Y+3,pos.Z))
+                task.wait(0.3)
+            end
+        end
+        pcall(function() fireproximityprompt(prompt) end)
+        task.wait(0.5)
+        pcall(function() fireproximityprompt(prompt) end)
+        task.wait(0.3)
+        S.DungeonStep=step+1 S.DungeonTPDone=false S.DungeonSearchFails=0
+        if step<6 then
+            S.Notify.new({Title="Dungeon Piece #"..step.." Collected!",Content="Next: Piece #"..(step+1),Duration=3,Icon=S.ICON})
+        else
+            S.Notify.new({Title="Dungeon Piece #6 Collected!",Content="All pieces found!",Duration=3,Icon=S.ICON})
+        end
+    else
+        S.DungeonSearchFails=(S.DungeonSearchFails or 0)+1
+        if S.DungeonSearchFails%5==0 then
+            S.Notify.new({Title="Piece #"..step.." Not Found",Content="Searching "..fn.PortalDisplayName(island).." ("..S.DungeonSearchFails.." attempts)",Duration=3,Icon=S.ICON})
+        end
+        if S.DungeonSearchFails>=15 then
+            S.Notify.new({Title="Piece #"..step.." Skipped",Content="Not found after "..S.DungeonSearchFails.." attempts on "..fn.PortalDisplayName(island),Duration=5,Icon=S.ICON})
+            S.DungeonStep=step+1 S.DungeonTPDone=false S.DungeonSearchFails=0
+        elseif S.DungeonSearchFails%8==0 then
+            S.DungeonTPDone=false
+        else
+            local hrp=fn.PlayerHRP()
+            if hrp then fn.TweenToPoint(hrp.Position+Vector3.new(math.random(-200,200),5,math.random(-200,200))) task.wait(0.5) end
+        end
+    end
+end
+fn.ScanDungeonDebug=function()
+    local lines={}
+    table.insert(lines,"== QUEST STATE ==")
+    table.insert(lines,"Step: "..S.DungeonStep.." | TPDone: "..tostring(S.DungeonTPDone).." | Active: "..tostring(S.DungeonQuestActive).." | Fails: "..(S.DungeonSearchFails or 0))
+    table.insert(lines,"== DUNGEON OBJECTS (workspace) ==")
+    local ct=0
+    for _,desc in ipairs(workspace:GetDescendants()) do
+        local nm=(desc.Name or ""):lower()
+        if (nm:find("dungeon") or nm:find("piece")) and ct<30 then
+            ct=ct+1
+            local info=desc.Name.." ["..desc.ClassName.."]"
+            if desc.Parent then info=info.." in "..desc.Parent.Name end
+            if desc:IsA("ProximityPrompt") then info=info.." Action="..(desc.ActionText or "").." Obj="..(desc.ObjectText or "") end
+            table.insert(lines,info)
+        end
+    end
+    if ct==0 then table.insert(lines,"(none)") end
+    table.insert(lines,"== NEARBY PROMPTS (<200 studs) ==")
+    local hrp=fn.PlayerHRP() local pc=0
+    if hrp then
+        for _,desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("ProximityPrompt") and pc<20 then
+                local par=desc.Parent local pos=nil
+                if par and par:IsA("BasePart") then pos=par.Position elseif par and par:IsA("Model") then pos=fn.ModelPos(par) end
+                if pos and (hrp.Position-pos).Magnitude<200 then
+                    pc=pc+1
+                    table.insert(lines,(par and par.Name or "?").." Action="..(desc.ActionText or "").." Obj="..(desc.ObjectText or "").." d="..math.floor((hrp.Position-pos).Magnitude))
+                end
+            end
+        end
+    end
+    if pc==0 then table.insert(lines,"(none)") end
+    table.insert(lines,"== QUEST REMOTES ==")
+    local rc=0
+    pcall(function()
+        for _,desc in ipairs(RS:GetDescendants()) do
+            local nm=(desc.Name or ""):lower()
+            if (nm:find("quest") or nm:find("dungeon")) and (desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction")) then
+                rc=rc+1 table.insert(lines,desc.Name.." ["..desc.ClassName.."] in "..(desc.Parent and desc.Parent.Name or "?"))
+            end
+        end
+    end)
+    if rc==0 then table.insert(lines,"(none)") end
+    table.insert(lines,"== QUEST UI (PlayerGui) ==")
+    local uc=0
+    pcall(function()
+        local pg=LP:FindFirstChild("PlayerGui") if not pg then return end
+        for _,desc in ipairs(pg:GetDescendants()) do
+            if (desc:IsA("TextLabel") or desc:IsA("TextButton")) and uc<15 then
+                local txt=(desc.Text or ""):lower()
+                if txt:find("dungeon") or txt:find("quest") or txt:find("piece") or txt:find("collect") then
+                    uc=uc+1 table.insert(lines,desc.Name..": "..(desc.Text or ""):sub(1,80))
+                end
+            end
+        end
+    end)
+    if uc==0 then table.insert(lines,"(none)") end
+    return table.concat(lines,"\n")
 end
 ---------- UI (in do block to scope locals) ----------
 do
@@ -1225,9 +1494,34 @@ task.spawn(function() while S.Running do task.wait(1) pcall(function() LT:SetTex
 WM:AddText({Icon="server",Text=S.Hub.Version})
 S.Win:DrawCategory({Name="AUTO FARM"})
 local FTab=S.Win:DrawTab({Name="Farm",Icon="sword",EnableScrolling=true})
+local QTab=S.Win:DrawTab({Name="Quests",Icon="bookmark",EnableScrolling=true})
+local QSec=QTab:DrawSection({Name="Unlock Quests",Position="left"})
+S.DungeonToggle=QSec:AddToggle({Name="Unlock Dungeons",Flag="DungeonQuest",Default=false,Callback=function(v)
+    F.DungeonQuest=v
+    if v then
+        S.DungeonStep=0 S.DungeonTPDone=false S.DungeonQuestActive=false
+        if F.AutoFarmLevel then
+            F.AutoFarmLevel=false
+            if S.FarmToggle then pcall(function() S.FarmToggle:SetValue(false) end) end
+            fn.FullReset()
+        end
+        S.Notify.new({Title="Dungeon Quest",Content="Starting dungeon unlock quest",Duration=3,Icon=S.ICON})
+    else
+        S.DungeonStep=0 S.DungeonTPDone=false S.DungeonQuestActive=false
+        fn.AbandonDungeonQuest()
+        fn.ClearTgt() S.HoverPos=nil
+        S.Notify.new({Title="Dungeon Quest",Content="Quest abandoned",Duration=3,Icon=S.ICON})
+    end
+end})
+S.DungeonToggle.Link:AddHelper({Text="Collect 6 pieces across islands to unlock dungeons"})
+QSec:AddParagraph({Title="Info",Content="1. Goes to Dungeon Island to accept quest\n2. Collects 6 pieces in order (Starter→Jungle→Desert→Snow→Shibuya→Hueco Mundo)\n3. Returns to Dungeon Master\n\nWARNING: Abandoning restarts from piece #1"})
+local QDebugSec=QTab:DrawSection({Name="Quest Debug",Position="right"})
+S.QuestDebugP=QDebugSec:AddParagraph({Title="Debug Output",Content="Press Scan to debug"})
+QDebugSec:AddButton({Name="Scan Dungeon",Callback=function() local txt=fn.ScanDungeonDebug() if S.QuestDebugP then pcall(function() if S.QuestDebugP.SetContent then S.QuestDebugP:SetContent(txt) elseif S.QuestDebugP.Set then S.QuestDebugP:Set(txt) elseif S.QuestDebugP.SetText then S.QuestDebugP:SetText(txt) end end) end S.Notify.new({Title="Quest Debug",Content="Scan complete — check Debug section",Duration=3,Icon=S.ICON}) end})
+QDebugSec:AddButton({Name="Copy Debug to Clipboard",Callback=function() local txt=fn.ScanDungeonDebug() pcall(function() setclipboard(txt) end) S.Notify.new({Title="Debug Copied",Content="Paste in Discord for help!",Duration=3,Icon=S.ICON}) end})
 local FSec=FTab:DrawSection({Name="Auto Farm Level",Position="left"})
 S.FarmToggle=FSec:AddToggle({Name="Auto Farm Level",Flag="AutoFarmLevel",Default=false,Callback=function(v) F.AutoFarmLevel=v if not v then fn.FullReset() end end})
-S.FarmToggle.Link:AddKeybind({Default="V",Flag="FarmLevelKeybind",Callback=fn.ToggleFarm})
+S.FarmKeybind=S.FarmToggle.Link:AddKeybind({Default="V",Flag="FarmLevelKeybind",Callback=function() end})
 S.FarmToggle.Link:AddHelper({Text="Plank above enemies & attack"})
 FSec:AddToggle({Name="Auto Equip Sword",Flag="AutoEquip",Default=true,Callback=function(v) F.AutoEquip=v end})
 FSec:AddToggle({Name="Auto Quest",Flag="AutoQuest",Default=true,Callback=function(v) F.AutoQuest=v if v and F.AutoFarmLevel then task.spawn(fn.EnableGameQuestRepeat) end end})
@@ -1257,14 +1551,15 @@ for _,name in ipairs(S.TpIslands) do
 end
 local BSec=FTab:DrawSection({Name="Auto Farm Boss",Position="right"})
 S.BossToggle=BSec:AddToggle({Name="Enable Boss Killing",Flag="BossEnabled",Default=false,Callback=function(v) F.BossEnabled=v if not v and S.BossFight then fn.ExitBossMode(S.BossTargetName) end end})
-S.BossToggle.Link:AddKeybind({Default="B",Flag="BossKeybind",Callback=fn.ToggleBoss})
+S.BossKeybind=S.BossToggle.Link:AddKeybind({Default="B",Flag="BossKeybind",Callback=function() end})
 S.BossToggle.Link:AddHelper({Text="Timer-based world bosses"})
 for _,bDef in ipairs(S.Bosses) do BSec:AddToggle({Name=bDef.Display.." ("..bDef.Island..")",Flag="Boss_"..bDef.Name,Default=false,Callback=function(v) S.BF[bDef.Name]=v end}) end
 S.BossInfoP=BSec:AddParagraph({Title="Boss Timers",Content="Scanning..."})
 task.spawn(function() task.wait(1.5) fn.ScanAllBossTimers() while S.Running do fn.ScanAllBossTimers() if S.BossInfoP then pcall(function() local txt=fn.GetBossTimerText() if S.BossInfoP.SetContent then S.BossInfoP:SetContent(txt) elseif S.BossInfoP.Set then S.BossInfoP:Set(txt) elseif S.BossInfoP.SetText then S.BossInfoP:SetText(txt) end end) end task.wait(1) end end)
 local BSummonSec=FTab:DrawSection({Name="Auto Summon Boss",Position="right"})
 S.SummonBossToggle=BSummonSec:AddToggle({Name="Auto Summon Boss",Flag="SummonBossEnabled",Default=false,Callback=function(v) F.SummonBossEnabled=v if not v then fn.ExitSummonBossMode() end end})
-S.SummonBossToggle.Link:AddKeybind({Default="N",Flag="SummonBossKeybind",Callback=fn.ToggleSummonBoss})
+S.SummonBossToggle.Link:AddHelper({Text="Uses RequestAutoSpawn — game auto-respawns"})
+S.SummonBossKeybind=S.SummonBossToggle.Link:AddKeybind({Default="N",Flag="SummonBossKeybind",Callback=function() end})
 S.SummonBossToggle.Link:AddHelper({Text="Priority over farm & timer bosses"})
 local SummonDiffKeys={GilgameshBoss="GilgameshDiff",BlessedMaidenBoss="BlessedMaidenDiff",AnosBoss="AnosDiff",StrongestTodayBoss="StrongestTodayDiff",StrongestHistoryBoss="StrongestHistoryDiff"}
 for _,bDef in ipairs(S.SummonBosses) do
@@ -1287,13 +1582,13 @@ S.AllSkillsToggle=SSec:AddToggle({Name="All Skills",Flag="AllSkills",Default=fal
         if tgl then pcall(function() tgl:SetValue(v) end) else F[k]=v end
     end
 end})
-S.AllSkillsToggle.Link:AddKeybind({Default="M",Flag="AllSkillsKeybind",Callback=fn.ToggleAllSkills})
+S.AllSkillsKeybind=S.AllSkillsToggle.Link:AddKeybind({Default="M",Flag="AllSkillsKeybind",Callback=function() end})
 S.AllSkillsToggle.Link:AddHelper({Text="Toggle all skills on/off"})
 S.SkillToggles.SkillZ=SSec:AddToggle({Name="Skill Z",Flag="SkillZ",Default=false,Callback=function(v) F.SkillZ=v end}) S.SkillToggles.SkillZ.Link:AddHelper({Text="Auto use"})
 S.SkillToggles.SkillX=SSec:AddToggle({Name="Skill X",Flag="SkillX",Default=false,Callback=function(v) F.SkillX=v end}) S.SkillToggles.SkillX.Link:AddHelper({Text="Auto use"})
 S.SkillToggles.SkillC=SSec:AddToggle({Name="Skill C",Flag="SkillC",Default=false,Callback=function(v) F.SkillC=v end}) S.SkillToggles.SkillC.Link:AddHelper({Text="Auto use"})
 S.SkillToggles.SkillV=SSec:AddToggle({Name="Skill V",Flag="SkillV",Default=false,Callback=function(v) F.SkillV=v end}) S.SkillToggles.SkillV.Link:AddHelper({Text="Auto use"})
-S.SkillToggles.SkillB=SSec:AddToggle({Name="Skill B",Flag="SkillB",Default=false,Callback=function(v) F.SkillB=v end}) S.SkillToggles.SkillB.Link:AddHelper({Text="Auto use"})
+S.SkillToggles.SkillF=SSec:AddToggle({Name="Skill F (Nuke)",Flag="SkillF",Default=false,Callback=function(v) F.SkillF=v end}) S.SkillToggles.SkillF.Link:AddHelper({Text="Auto use — Nuke ability"})
 SSec:AddSlider({Name="Skill Cooldown",Min=0.3,Max=5,Default=1.0,Round=1,Flag="SkillCooldown",Callback=function(v) F.SkillCooldown=v end})
 local CSec=FTab:DrawSection({Name="Auto Chest",Position="right"})
 CSec:AddToggle({Name="Auto Open Chests",Flag="AutoChest",Default=false,Callback=function(v) F.AutoChest=v end}).Link:AddHelper({Text="Opens all chests in batch"})
@@ -1341,7 +1636,16 @@ task.defer(function()
         end
     end)
 end)
-fn.Conn(UserInputService.InputBegan:Connect(function(input,gp) if gp or fn.Typing() then return end if input.KeyCode==Enum.KeyCode.V then fn.ToggleFarm() elseif input.KeyCode==Enum.KeyCode.B then fn.ToggleBoss() elseif input.KeyCode==Enum.KeyCode.N then fn.ToggleSummonBoss() elseif input.KeyCode==Enum.KeyCode.M then fn.ToggleAllSkills() end end))
+fn.Conn(UserInputService.InputBegan:Connect(function(input,gp)
+    if gp or fn.Typing() then return end
+    local key=input.KeyCode
+    if key==Enum.KeyCode.Unknown then return end
+    local kn=key.Name
+    if S.FarmKeybind and kn==S.FarmKeybind:GetValue() then fn.ToggleFarm() return end
+    if S.BossKeybind and kn==S.BossKeybind:GetValue() then fn.ToggleBoss() return end
+    if S.SummonBossKeybind and kn==S.SummonBossKeybind:GetValue() then fn.ToggleSummonBoss() return end
+    if S.AllSkillsKeybind and kn==S.AllSkillsKeybind:GetValue() then fn.ToggleAllSkills() return end
+end))
 end -- UI do block
 ---------- STARTUP ----------
 fn.SetupAntiAFK()
@@ -1349,13 +1653,15 @@ task.spawn(fn.DisableGameAutoSkills)
 task.spawn(function() while S.Running do if F.AutoQuest then fn.QuestCompletionScan() end task.wait(2) end end)
 task.spawn(function() while S.Running do if F.AutoChest then fn.OpenAllChests() end if F.AutoMerchant then fn.BuyMerchantItems() end task.wait(8) end end)
 task.spawn(function()
+    if not fn.IsAlive() then fn.WaitChar() task.wait(0.5) end
+    for _=1,10 do if fn.GetLevel()>0 then break end task.wait(0.5) end
     while S.Running do
         repeat
             local isSummonActive=F.SummonBossEnabled and fn.HasAnySummonBossEnabled()
-            if not F.AutoFarmLevel and not isSummonActive then task.wait(0.3) break end
+            if not F.AutoFarmLevel and not isSummonActive and not F.DungeonQuest then task.wait(0.3) break end
             if not fn.IsAlive() then
                 fn.ClearTgt() S.HoverPos=nil fn.WaitChar() task.wait(0.3)
-                if F.AutoEquip then fn.EquipSword() task.wait(0.2) end
+                if F.AutoEquip then fn.EquipBothWeapons() task.wait(0.2) end
                 if not S.BossFight and not S.SummonBossFight then S.IslandTPd=false S.SpawnDone=false end
                 S.LastBossTP=0 S.BossTPDone=false S.LastSummonBossTP=0 S.SummonBossTPDone=false
             end
@@ -1366,6 +1672,7 @@ task.spawn(function()
                 S.Notify.new({Title="Summon Boss Mode",Content="Starting summon boss cycle",Duration=3,Icon=S.ICON})
             end
             if S.SummonBossFight then fn.DoSummonBossTick() task.wait(0.1) break end
+            if F.DungeonQuest then fn.DoDungeonQuestTick() task.wait(0.2) break end
             if not F.AutoFarmLevel then task.wait(0.3) break end
             if F.BossEnabled and not S.BossFight then
                 local nextName=fn.PickNextBossName()
