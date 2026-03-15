@@ -82,13 +82,13 @@ for _,item in ipairs(S.MerchantItems) do S.FM[item]=false end
 ---------- MUTABLE STATE ----------
 S.Kills=0 S.BossKills=0
 S.Hub=nil S.Notify=nil S.Win=nil S.CfgMgr=nil
-S.FarmToggle=nil S.BossToggle=nil S.SummonBossToggle=nil
+S.FarmToggle=nil S.BossToggle=nil
 S.FarmKeybind=nil S.BossKeybind=nil S.SummonBossKeybind=nil S.AllSkillsKeybind=nil
 S.SkillToggles={} S.SkillKeys={"SkillZ","SkillX","SkillC","SkillV","SkillF"} S.AllSkillsToggle=nil
 S.Running=true
 S.CurIsland=nil S.CurTarget=nil
 S.Conns={}
-S.LastEquip=0 S.LastTP=0 S.LastEnemy=0 S.LastSkill=0 S.LastChest=0 S.LastQuestAccept=0 S.LastMerchant=0 S.LastCanCollide=0
+S.LastEquip=0 S.LastTP=0 S.LastEnemy=0 S.LastSkill=0 S.LastChest=0 S.LastQuestAccept=0 S.LastMerchant=0 S.LastCanCollide=0 S.CachedAbilityRemote=nil
 S.TPCount=0 S.TPReset=tick()
 S.KillCount=0
 S.ConfLevel=0 S.LastLevelScanTick=0
@@ -661,15 +661,17 @@ end
 fn.FireAbilities=function()
     if tick()-S.LastSkill<F.SkillCooldown then return end
     if not(F.SkillZ or F.SkillX or F.SkillC or F.SkillV or F.SkillF) then return end
+    if not S.CachedAbilityRemote then
+        pcall(function() S.CachedAbilityRemote=fn.WalkPathWait(RS,2,unpack(R.Ability)) end)
+    end
+    local r=S.CachedAbilityRemote
+    if not r then return end
     S.LastSkill=tick()
-    pcall(function()
-        local r=fn.WalkPathWait(RS,2,unpack(R.Ability))
-        if F.SkillZ then pcall(function() r:FireServer(1) end) end
-        if F.SkillX then pcall(function() r:FireServer(2) end) end
-        if F.SkillC then pcall(function() r:FireServer(3) end) end
-        if F.SkillV then pcall(function() r:FireServer(4) end) end
-        if F.SkillF then pcall(function() r:FireServer(5) end) end
-    end)
+    if F.SkillZ then pcall(function() r:FireServer(1) end) end
+    if F.SkillX then pcall(function() r:FireServer(2) end) end
+    if F.SkillC then pcall(function() r:FireServer(3) end) end
+    if F.SkillV then pcall(function() r:FireServer(4) end) end
+    if F.SkillF then pcall(function() r:FireServer(5) end) end
 end
 fn.Attack=function(tgt)
     local tr=fn.Root(tgt)
@@ -686,7 +688,15 @@ fn.Attack=function(tgt)
 end
 fn.ToggleFarm=function() if S.FarmToggle then pcall(function() S.FarmToggle:SetValue(not S.FarmToggle:GetValue()) end) else F.AutoFarmLevel=not F.AutoFarmLevel if not F.AutoFarmLevel then fn.FullReset() end end end
 fn.ToggleBoss=function() if S.BossToggle then pcall(function() S.BossToggle:SetValue(not S.BossToggle:GetValue()) end) else F.BossEnabled=not F.BossEnabled if not F.BossEnabled and S.BossFight then fn.ExitBossMode(S.BossTargetName) end end end
-fn.ToggleSummonBoss=function() if S.SummonBossToggle then pcall(function() S.SummonBossToggle:SetValue(not S.SummonBossToggle:GetValue()) end) else F.SummonBossEnabled=not F.SummonBossEnabled if not F.SummonBossEnabled then fn.ExitSummonBossMode() end end end
+fn.ToggleSummonBoss=function()
+    if fn.HasAnySummonBossEnabled() then
+        for _,b in ipairs(S.SummonBosses) do
+            S.BSF[b.Name]=false
+            if S.BSFToggle[b.Name] then pcall(function() S.BSFToggle[b.Name]:SetValue(false) end) end
+        end
+        fn.ExitSummonBossMode()
+    end
+end
 fn.ToggleAllSkills=function()
     local anyOn=false
     for _,k in ipairs(S.SkillKeys) do if F[k] then anyOn=true break end end
@@ -988,12 +998,21 @@ end
 fn.FireAutoSpawn=function(name)
     if not S.BSF[name] then return end
     if S.AutoSpawnActive[name] then return end
+    local diff=fn.GetSummonBossDiff(name) or "Normal"
     pcall(function()
-        local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnBoss))
-        if not r then return end
-        local diff=fn.GetSummonBossDiff(name) or "Normal"
-        r:FireServer(name,diff)
-        S.AutoSpawnActive[name]=true
+        if name=="AnosBoss" then
+            local r=fn.WalkPathWait(RS,3,unpack(R.AnosBoss))
+            if r then r:FireServer("Anos",diff) S.AutoSpawnActive[name]=true end
+        elseif name=="StrongestTodayBoss" then
+            local r=fn.WalkPathWait(RS,3,unpack(R.StrongestBoss))
+            if r then r:FireServer("StrongestToday",diff) S.AutoSpawnActive[name]=true end
+        elseif name=="StrongestHistoryBoss" then
+            local r=fn.WalkPathWait(RS,3,unpack(R.StrongestBoss))
+            if r then r:FireServer("StrongestHistory",diff) S.AutoSpawnActive[name]=true end
+        else
+            local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnBoss))
+            if r then r:FireServer(name,diff) S.AutoSpawnActive[name]=true end
+        end
     end)
 end
 fn.DisableAutoSpawn=function(name)
@@ -1163,7 +1182,14 @@ fn.DoSummonBossTick=function()
             local bp=fn.ModelPos(nextModel)
             if bp then
                 local goal=Vector3.new(bp.X,bp.Y+F.HeightOffset,bp.Z)
-                fn.TweenToPoint(goal)
+                local hrp=fn.PlayerHRP()
+                if hrp and (hrp.Position-goal).Magnitude>80 then
+                    hrp.CFrame=CFrame.new(goal)
+                    S.HoverPos=goal
+                    task.wait(0.1)
+                else
+                    fn.TweenToPoint(goal)
+                end
             end
         end
         S.SummonBossTPDone=true S.SummonBossTarget=nextName
@@ -1182,6 +1208,7 @@ fn.DoSummonBossTick=function()
                     else
                         S.SummonBossFailCount[b.Name]=(S.SummonBossFailCount[b.Name] or 0)+1
                         if (S.SummonBossFailCount[b.Name] or 0)>=3 then
+                            fn.DisableAutoSpawn(b.Name)
                             S.SummonBossCommitted[b.Name]=nil
                             S.BSF[b.Name]=false
                             local tgl=S.BSFToggle[b.Name]
@@ -1249,13 +1276,23 @@ fn.DoSummonBossTick=function()
     end
     local bossPos=fn.ModelPos(model)
     if not bossPos or bossPos.Y<-30 then task.wait(0.15) return end
-    if fn.DistTo(bossPos)>500 then
-        S.SummonBossTPDone=false S.LastSummonBossTP=0
-        fn.ClearTgt()
-        return
+    local dist=fn.DistTo(bossPos)
+    -- For far-away bosses, CFrame teleport directly above them
+    if dist>80 then
+        fn.StopTw()
+        local goal=Vector3.new(bossPos.X,bossPos.Y+F.HeightOffset,bossPos.Z)
+        local hrp=fn.PlayerHRP()
+        if hrp then hrp.CFrame=CFrame.new(goal) end
+        S.HoverPos=goal S.LockTarget=model
+        task.wait(0.1)
     end
     S.CurTarget=model
-    fn.TweenTo(model)
+    if fn.DistTo(bossPos)>15 then
+        local goal=Vector3.new(bossPos.X,bossPos.Y+F.HeightOffset,bossPos.Z)
+        S.HoverPos=goal S.LockTarget=model
+    else
+        fn.TweenTo(model)
+    end
     fn.Attack(model)
     if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() fn.EquipBothWeapons() end
 end
@@ -1518,18 +1555,44 @@ S.BossToggle.Link:AddHelper({Text="Timer-based world bosses"})
 for _,bDef in ipairs(S.Bosses) do BSec:AddToggle({Name=bDef.Display.." ("..bDef.Island..")",Flag="Boss_"..bDef.Name,Default=false,Callback=function(v) S.BF[bDef.Name]=v end}) end
 S.BossInfoP=BSec:AddParagraph({Title="Boss Timers",Content="Scanning..."})
 task.spawn(function() task.wait(1.5) fn.ScanAllBossTimers() while S.Running do fn.ScanAllBossTimers() if S.BossInfoP then pcall(function() local txt=fn.GetBossTimerText() if S.BossInfoP.SetContent then S.BossInfoP:SetContent(txt) elseif S.BossInfoP.Set then S.BossInfoP:Set(txt) elseif S.BossInfoP.SetText then S.BossInfoP:SetText(txt) end end) end task.wait(1) end end)
-local BSummonSec=FTab:DrawSection({Name="Auto Summon Boss",Position="right"})
-S.SummonBossToggle=BSummonSec:AddToggle({Name="Auto Summon Boss",Flag="SummonBossEnabled",Default=false,Callback=function(v) F.SummonBossEnabled=v if not v then fn.ExitSummonBossMode() end end})
-S.SummonBossToggle.Link:AddHelper({Text="Uses RequestAutoSpawn — game auto-respawns"})
-S.SummonBossKeybind=S.SummonBossToggle.Link:AddKeybind({Default="N",Flag="SummonBossKeybind",Callback=function() end})
-S.SummonBossToggle.Link:AddHelper({Text="Priority over farm & timer bosses"})
+local BSummonSec=FTab:DrawSection({Name="Summon Boss",Position="right"})
 local SummonDiffKeys={GilgameshBoss="GilgameshDiff",BlessedMaidenBoss="BlessedMaidenDiff",AnosBoss="AnosDiff",StrongestTodayBoss="StrongestTodayDiff",StrongestHistoryBoss="StrongestHistoryDiff"}
 for _,bDef in ipairs(S.SummonBosses) do
     local bossName=bDef.Name
     local bossDisplay=bDef.Display
     local flagName="SummonBoss_"..bossName
     local islLabel=bDef.Island and " ("..fn.PortalDisplayName(bDef.Island)..")" or ""
-    local tgl=BSummonSec:AddToggle({Name=bossDisplay..islLabel,Flag=flagName,Default=false,Callback=function(v) S.BSF[bossName]=v if v then S.SummonBossFailCount[bossName]=nil end end})
+    local tgl=BSummonSec:AddToggle({Name=bossDisplay..islLabel,Flag=flagName,Default=false,Callback=function(v)
+        if v then
+            -- One boss at a time: disable all others first
+            for _,ob in ipairs(S.SummonBosses) do
+                if ob.Name~=bossName and S.BSF[ob.Name] then
+                    S.BSF[ob.Name]=false
+                    fn.DisableAutoSpawn(ob.Name)
+                    S.SummonBossCommitted[ob.Name]=nil
+                    S.SummonBossFireTime[ob.Name]=nil
+                    if S.BSFToggle[ob.Name] then pcall(function() S.BSFToggle[ob.Name]:SetValue(false) end) end
+                end
+            end
+            S.BSF[bossName]=true
+            S.SummonBossFailCount[bossName]=nil
+            -- Full reset so it cleanly transitions to the new boss/island
+            fn.StopTw()
+            S.SummonBossFight=false S.SummonBossTPDone=false S.LastSummonBossTP=0
+            S.SummonBossTarget=nil S.SummonBossCurrentIsland=nil
+            S.SummonBossCommitted={} S.SummonBossFireTime={} S.SummonBossOrder=0
+            fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+        else
+            S.BSF[bossName]=false
+            fn.DisableAutoSpawn(bossName)
+            S.SummonBossCommitted[bossName]=nil
+            S.SummonBossFireTime[bossName]=nil
+            if S.SummonBossTarget==bossName then S.SummonBossTarget=nil fn.ClearTgt() end
+            if not fn.HasAnySummonBossEnabled() then
+                fn.ExitSummonBossMode()
+            end
+        end
+    end})
     S.BSFToggle[bossName]=tgl
     if bDef.Difficulties then
         local diffFlag="Diff_"..bossName
@@ -1605,7 +1668,7 @@ fn.Conn(UserInputService.InputBegan:Connect(function(input,gp)
     local kn=key.Name
     if S.FarmKeybind and kn==S.FarmKeybind:GetValue() then fn.ToggleFarm() return end
     if S.BossKeybind and kn==S.BossKeybind:GetValue() then fn.ToggleBoss() return end
-    if S.SummonBossKeybind and kn==S.SummonBossKeybind:GetValue() then fn.ToggleSummonBoss() return end
+    if kn=="N" then fn.ToggleSummonBoss() return end
     if S.AllSkillsKeybind and kn==S.AllSkillsKeybind:GetValue() then fn.ToggleAllSkills() return end
 end))
 end -- UI do block
@@ -1619,7 +1682,7 @@ task.spawn(function()
     for _=1,10 do if fn.GetLevel()>0 then break end task.wait(0.5) end
     while S.Running do
         repeat
-            local isSummonActive=F.SummonBossEnabled and fn.HasAnySummonBossEnabled()
+            local isSummonActive=fn.HasAnySummonBossEnabled()
             if not F.AutoFarmLevel and not isSummonActive and not F.DungeonQuest then task.wait(0.3) break end
             if not fn.IsAlive() then
                 fn.ClearTgt() S.HoverPos=nil fn.WaitChar() task.wait(0.3)
