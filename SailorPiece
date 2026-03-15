@@ -23,6 +23,8 @@ SummonBoss={"Remotes","RequestSummonBoss"},
 AnosBoss={"Remotes","RequestSpawnAnosBoss"},
 StrongestBoss={"Remotes","RequestSpawnStrongestBoss"},
 AutoSpawnBoss={"Remotes","RequestAutoSpawn"},
+AutoSpawnAnos={"Remotes","RequestAutoSpawnAnos"},
+AutoSpawnStrongest={"Remotes","RequestAutoSpawnStrongest"},
 }
 local F={AutoFarmLevel=false,HeightOffset=10,TweenSpeed=100,AntiAFK=true,AutoEquip=true,AutoQuest=true,AutoSpawn=false,SelectedIsland="Auto",SkillZ=false,SkillX=false,SkillC=false,SkillV=false,SkillF=false,SkillCooldown=1.0,BossEnabled=false,SummonBossEnabled=false,GilgameshDiff="Normal",BlessedMaidenDiff="Normal",AnosDiff="Normal",StrongestTodayDiff="Normal",StrongestHistoryDiff="Normal",AutoChest=false,FarmMode="Plank",MoveMode="Tween",OffsetDist=5,AutoMerchant=false,MerchNotify=true,DungeonQuest=false}
 ---------- CONSTANTS & DATA ----------
@@ -108,6 +110,7 @@ S.SummonBossTPDone=false S.LastSummonBossTP=0
 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil
 S.SummonBossOrder=0 S.SummonBossFailCount={}
 S.SummonBossFireTime={}
+S.SummonBossLockedDiff={}
 S.AutoSpawnActive={}
 S.ButtonBorderStrokes={}
 S.DungeonStep=0 S.DungeonCollected={} S.NoclipActive=false
@@ -226,7 +229,7 @@ fn.FullReset=function()
     fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0 S.LastTP=0 S.TPCount=0
     fn.AbandonAllQuests()
     S.LastQuestAccept=0 S.BossTargetName=nil S.BossFight=false S.BossTPDone=false S.LastBossTP=0 S.BossTPRetries=0 S.BossCurrentIsland=nil
-    S.SummonBossFight=false S.SummonBossTarget=nil S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={}
+    S.SummonBossFight=false S.SummonBossTarget=nil S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossLockedDiff={}
     pcall(function() local c=LP.Character if c then local hm=c:FindFirstChildOfClass("Humanoid") if hm then hm.PlatformStand=false end end end)
 end
 fn.DoTP=function(portal)
@@ -998,16 +1001,20 @@ end
 fn.FireAutoSpawn=function(name)
     if not S.BSF[name] then return end
     if S.AutoSpawnActive[name] then return end
-    local diff=fn.GetSummonBossDiff(name) or "Normal"
+    -- Lock difficulty on first spawn, reuse for all auto-respawns
+    if not S.SummonBossLockedDiff[name] then
+        S.SummonBossLockedDiff[name]=fn.GetSummonBossDiff(name) or "Normal"
+    end
+    local diff=S.SummonBossLockedDiff[name]
     pcall(function()
         if name=="AnosBoss" then
-            local r=fn.WalkPathWait(RS,3,unpack(R.AnosBoss))
+            local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnAnos))
             if r then r:FireServer("Anos",diff) S.AutoSpawnActive[name]=true end
         elseif name=="StrongestTodayBoss" then
-            local r=fn.WalkPathWait(RS,3,unpack(R.StrongestBoss))
+            local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnStrongest))
             if r then r:FireServer("StrongestToday",diff) S.AutoSpawnActive[name]=true end
         elseif name=="StrongestHistoryBoss" then
-            local r=fn.WalkPathWait(RS,3,unpack(R.StrongestBoss))
+            local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnStrongest))
             if r then r:FireServer("StrongestHistory",diff) S.AutoSpawnActive[name]=true end
         else
             local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnBoss))
@@ -1016,9 +1023,33 @@ fn.FireAutoSpawn=function(name)
     end)
 end
 fn.DisableAutoSpawn=function(name)
+    if S.AutoSpawnActive[name] then
+        -- Fire the same auto-spawn remote again to toggle it off server-side
+        local diff=S.SummonBossLockedDiff[name] or fn.GetSummonBossDiff(name) or "Normal"
+        pcall(function()
+            if name=="AnosBoss" then
+                local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnAnos))
+                if r then r:FireServer("Anos",diff) end
+            elseif name=="StrongestTodayBoss" then
+                local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnStrongest))
+                if r then r:FireServer("StrongestToday",diff) end
+            elseif name=="StrongestHistoryBoss" then
+                local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnStrongest))
+                if r then r:FireServer("StrongestHistory",diff) end
+            else
+                local r=fn.WalkPathWait(RS,3,unpack(R.AutoSpawnBoss))
+                if r then r:FireServer(name,diff) end
+            end
+        end)
+    end
     S.AutoSpawnActive[name]=nil
 end
 fn.DisableAllAutoSpawn=function()
+    for _,b in ipairs(S.SummonBosses) do
+        if S.AutoSpawnActive[b.Name] then
+            fn.DisableAutoSpawn(b.Name)
+        end
+    end
     S.AutoSpawnActive={}
 end
 fn.FireSummonBoss=function(name)
@@ -1066,7 +1097,7 @@ fn.HasAnySummonBossEnabled=function()
 end
 fn.ExitSummonBossMode=function()
     fn.DisableAllAutoSpawn()
-    S.SummonBossFight=false S.SummonBossTarget=nil S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossFireTime={}
+    S.SummonBossFight=false S.SummonBossTarget=nil S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossFireTime={} S.SummonBossLockedDiff={}
     fn.ClearTgt() S.HoverPos=nil
     S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0 S.LastTP=0
 end
@@ -1184,14 +1215,8 @@ fn.DoSummonBossTick=function()
             local bp=fn.ModelPos(nextModel)
             if bp then
                 local goal=Vector3.new(bp.X,bp.Y+F.HeightOffset,bp.Z)
-                local hrp=fn.PlayerHRP()
-                if hrp and (hrp.Position-goal).Magnitude>80 then
-                    hrp.CFrame=CFrame.new(goal)
-                    S.HoverPos=goal
-                    task.wait(0.1)
-                else
-                    fn.TweenToPoint(goal)
-                end
+                fn.TweenToPoint(goal)
+                S.HoverPos=goal
             end
         end
         S.SummonBossTPDone=true S.SummonBossTarget=nextName
@@ -1606,7 +1631,7 @@ for _,bDef in ipairs(S.SummonBosses) do
             fn.StopTw()
             S.SummonBossFight=false S.SummonBossTPDone=false S.LastSummonBossTP=0
             S.SummonBossTarget=nil S.SummonBossCurrentIsland=nil
-            S.SummonBossCommitted={} S.SummonBossFireTime={} S.SummonBossOrder=0
+            S.SummonBossCommitted={} S.SummonBossFireTime={} S.SummonBossOrder=0 S.SummonBossLockedDiff={}
             fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
         else
             S.BSF[bossName]=false
@@ -1726,7 +1751,7 @@ task.spawn(function()
             end
             if not isSummonActive and S.SummonBossFight then fn.ExitSummonBossMode() end
             if isSummonActive and not S.SummonBossFight then
-                S.SummonBossFight=true S.BossFight=false S.BossTargetName=nil S.BossTPDone=false S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossFireTime={} fn.ClearTgt() S.HoverPos=nil S.CurIsland=nil S.IslandTPd=false
+                S.SummonBossFight=true S.BossFight=false S.BossTargetName=nil S.BossTPDone=false S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossFireTime={} S.SummonBossLockedDiff={} fn.ClearTgt() S.HoverPos=nil S.CurIsland=nil S.IslandTPd=false
             end
             if S.SummonBossFight then fn.DoSummonBossTick() task.wait(0.1) break end
             if not F.AutoFarmLevel then task.wait(0.3) break end
