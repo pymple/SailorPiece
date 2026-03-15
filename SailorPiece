@@ -1162,7 +1162,9 @@ fn.DoSummonBossTick=function()
         end
         S.LastSummonBossTP=tick()
         local displayIsland=fn.PortalDisplayName(targetIsland)
-        S.Notify.new({Title="Summon Boss",Content="Teleporting to "..displayIsland,Duration=2,Icon=S.ICON})
+        local bossDisp=""
+        for _,b in ipairs(S.SummonBosses) do if S.BSF[b.Name] then bossDisp=b.Display break end end
+        S.Notify.new({Title="SUMMONED BOSS NOTIFIER",Content="Attempting to summon "..bossDisp.."!",Duration=2,Icon=S.ICON})
         fn.StopTw() S.HoverPos=nil fn.ClearTgt()
         local _hrpBefore=fn.PlayerHRP()
         local posBefore=_hrpBefore and _hrpBefore.Position
@@ -1260,7 +1262,7 @@ fn.DoSummonBossTick=function()
         local deadName=S.SummonBossTarget
         local deadDisplay=S.SummonBossDisplay[deadName] or deadName
         S.BossKills=S.BossKills+1 S.Kills=S.Kills+1 S.KillCount=S.KillCount+1
-        S.Notify.new({Title="Killed "..deadDisplay,Content="Successfully killed "..deadDisplay,Duration=4,Icon=S.ICON})
+        S.Notify.new({Title="SUMMONED BOSS NOTIFIER",Content="Successfully defeated "..deadDisplay.."!",Duration=4,Icon=S.ICON})
         S.SummonBossCommitted[deadName]=nil
         S.SummonBossFailCount[deadName]=0
         S.SummonBossTarget=nil fn.ClearTgt()
@@ -1277,22 +1279,21 @@ fn.DoSummonBossTick=function()
     local bossPos=fn.ModelPos(model)
     if not bossPos or bossPos.Y<-30 then task.wait(0.15) return end
     local dist=fn.DistTo(bossPos)
-    -- For far-away bosses, CFrame teleport directly above them
-    if dist>80 then
-        fn.StopTw()
-        local goal=Vector3.new(bossPos.X,bossPos.Y+F.HeightOffset,bossPos.Z)
-        local hrp=fn.PlayerHRP()
-        if hrp then hrp.CFrame=CFrame.new(goal) end
-        S.HoverPos=goal S.LockTarget=model
-        task.wait(0.1)
+    -- Too far = not on the right island yet, re-trigger portal TP
+    if dist>500 then
+        S.SummonBossTPDone=false S.LastSummonBossTP=0
+        fn.ClearTgt()
+        return
     end
     S.CurTarget=model
-    if fn.DistTo(bossPos)>15 then
-        local goal=Vector3.new(bossPos.X,bossPos.Y+F.HeightOffset,bossPos.Z)
-        S.HoverPos=goal S.LockTarget=model
-    else
+    local goal=Vector3.new(bossPos.X,bossPos.Y+F.HeightOffset,bossPos.Z)
+    if dist>200 then
+        -- Medium-far: tween to point (we're on the island, just far away)
+        fn.TweenToPoint(goal)
+    elseif dist>15 then
         fn.TweenTo(model)
     end
+    S.HoverPos=goal S.LockTarget=model
     fn.Attack(model)
     if F.AutoEquip and tick()-S.LastEquip>3 then S.LastEquip=tick() fn.EquipBothWeapons() end
 end
@@ -1342,12 +1343,37 @@ fn.DungeonCollectPiece=function(piece)
     if not pp then for _,ch in ipairs(piece:GetDescendants()) do if ch:IsA("ProximityPrompt") then pp=ch break end end end
     if pp then pcall(function() fireproximityprompt(pp) end) task.wait(0.2) pcall(function() fireproximityprompt(pp) end) end
 end
+fn.DungeonPieceHasPrompt=function(piece)
+    if not piece then return false end
+    local pp=piece:FindFirstChild("PuzzlePrompt") or piece:FindFirstChildOfClass("ProximityPrompt")
+    if pp then return true end
+    for _,ch in ipairs(piece:GetDescendants()) do if ch:IsA("ProximityPrompt") then return true end end
+    return false
+end
 fn.DoDungeonQuestTick=function()
     if not F.DungeonQuest then return end
     local step=S.DungeonStep
-    -- Step 0: fire quest accept, jump straight to collecting
+    -- Step 0: check if all pieces are already collected, then accept quest
     if step<1 then
         fn.DungeonClear()
+        -- Quick scan: if no pieces have prompts, quest piece phase is already done
+        local anyUncollected=false
+        for _,isl in ipairs(S.DungeonPieceIslands) do
+            local p=fn.FindDungeonPiece(isl)
+            if p and fn.DungeonPieceHasPrompt(p) then anyUncollected=true break end
+        end
+        if not anyUncollected then
+            -- Check from current island — TP to first island to verify
+            fn.ForceTP(S.DungeonPieceIslands[1])
+            task.wait(1) fn.WaitChar() task.wait(0.5)
+            local p=fn.FindDungeonPiece(S.DungeonPieceIslands[1])
+            if not p or not fn.DungeonPieceHasPrompt(p) then
+                S.Notify.new({Title="Dungeon Pieces",Content="All pieces already collected!",Duration=4,Icon=S.ICON})
+                F.DungeonQuest=false S.DungeonStep=0 S.DungeonCollected={}
+                if S.DungeonToggle then pcall(function() S.DungeonToggle:SetValue(false) end) end
+                return
+            end
+        end
         fn.AcceptDungeonQuest()
         S.DungeonStep=1 S.DungeonCollected={}
         return
@@ -1360,7 +1386,7 @@ fn.DoDungeonQuestTick=function()
         fn.AcceptDungeonQuest()
         F.DungeonQuest=false S.DungeonStep=0 S.DungeonCollected={}
         if S.DungeonToggle then pcall(function() S.DungeonToggle:SetValue(false) end) end
-        S.Notify.new({Title="Dungeon Quest",Content="Complete! Dungeon unlocked.",Duration=4,Icon=S.ICON})
+        S.Notify.new({Title="Dungeon Pieces",Content="Complete! All pieces collected.",Duration=4,Icon=S.ICON})
         return
     end
     -- Steps 1-6: TP to island, find piece, collect, advance
@@ -1368,7 +1394,7 @@ fn.DoDungeonQuestTick=function()
     if not island then S.DungeonStep=step+1 return end
     if S.DungeonCollected and S.DungeonCollected[step] then S.DungeonStep=step+1 return end
     fn.DungeonClear()
-    S.Notify.new({Title="Dungeon",Content="Piece #"..step.." → "..fn.PortalDisplayName(island),Duration=2,Icon=S.ICON})
+    S.Notify.new({Title="DUNGEON PIECES NOTIFIER",Content="Piece #"..step.." located at "..fn.PortalDisplayName(island),Duration=2,Icon=S.ICON})
     fn.ForceTP(island)
     -- Tight wait: just enough for char to respawn after TP
     task.wait(0.5)
@@ -1378,8 +1404,8 @@ fn.DoDungeonQuestTick=function()
     local piece=fn.FindDungeonPiece(island)
     if not piece then task.wait(1) piece=fn.FindDungeonPiece(island) end
     if not piece then task.wait(1) piece=fn.FindDungeonPiece(island) end
-    if not piece then
-        S.Notify.new({Title="Dungeon",Content="Piece #"..step.." not found — skipping",Duration=2,Icon=S.ICON})
+    if not piece or not fn.DungeonPieceHasPrompt(piece) then
+        S.Notify.new({Title="Dungeon",Content="Piece #"..step.." already collected or not found",Duration=2,Icon=S.ICON})
     else
         fn.DungeonCollectPiece(piece)
     end
@@ -1488,7 +1514,7 @@ local FTab=S.Win:DrawTab({Name="Farm",Icon="sword",EnableScrolling=true})
 S.Win:DrawCategory({Name="AUTO QUESTS"})
 local QTab=S.Win:DrawTab({Name="Quests",Icon="bookmark",EnableScrolling=true})
 local QSec=QTab:DrawSection({Name="Unlock Quests",Position="left"})
-S.DungeonToggle=QSec:AddToggle({Name="Unlock Dungeons",Flag="DungeonQuest",Default=false,Callback=function(v)
+S.DungeonToggle=QSec:AddToggle({Name="Locate Dungeon Pieces",Flag="DungeonQuest",Default=false,Callback=function(v)
     F.DungeonQuest=v
     if v then
         -- Full reset on every enable — stress-test safe
@@ -1509,7 +1535,7 @@ S.DungeonToggle=QSec:AddToggle({Name="Unlock Dungeons",Flag="DungeonQuest",Defau
         S.Notify.new({Title="Dungeon Quest",Content="Quest abandoned",Duration=3,Icon=S.ICON})
     end
 end})
-S.DungeonToggle.Link:AddHelper({Text="Collect 6 pieces across islands to unlock dungeons"})
+S.DungeonToggle.Link:AddHelper({Text="Collect 6 puzzle pieces across islands"})
 QSec:AddParagraph({Title="Info",Content="1. Accepts quest remotely\n2. Collects 6 pieces (Starter→Jungle→Desert→Snow→Shibuya→Hueco Mundo)\n3. Returns to Dungeon Master\n\nPriority: overrides all other modes"})
 local FSec=FTab:DrawSection({Name="Auto Farm Level",Position="left"})
 S.FarmToggle=FSec:AddToggle({Name="Auto Farm Level",Flag="AutoFarmLevel",Default=false,Callback=function(v) F.AutoFarmLevel=v if not v then fn.FullReset() end end})
@@ -1701,7 +1727,6 @@ task.spawn(function()
             if not isSummonActive and S.SummonBossFight then fn.ExitSummonBossMode() end
             if isSummonActive and not S.SummonBossFight then
                 S.SummonBossFight=true S.BossFight=false S.BossTargetName=nil S.BossTPDone=false S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossFireTime={} fn.ClearTgt() S.HoverPos=nil S.CurIsland=nil S.IslandTPd=false
-                S.Notify.new({Title="Summon Boss Mode",Content="Starting summon boss cycle",Duration=3,Icon=S.ICON})
             end
             if S.SummonBossFight then fn.DoSummonBossTick() task.wait(0.1) break end
             if not F.AutoFarmLevel then task.wait(0.3) break end
