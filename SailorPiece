@@ -223,7 +223,7 @@ fn.AbandonAllQuests=function()
     end
 end
 fn.FullReset=function()
-    fn.ClearTgt() S.HoverPos=nil S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0 S.LastTP=0 S.TPCount=0
+    fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0 S.LastTP=0 S.TPCount=0
     fn.AbandonAllQuests()
     S.LastQuestAccept=0 S.BossTargetName=nil S.BossFight=false S.BossTPDone=false S.LastBossTP=0 S.BossTPRetries=0 S.BossCurrentIsland=nil
     S.SummonBossFight=false S.SummonBossTarget=nil S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCommitted={} S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={}
@@ -1293,88 +1293,62 @@ fn.FindDungeonPiece=function(island)
     end
     return nil
 end
+fn.DungeonClear=function()
+    fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+end
+fn.DungeonCollectPiece=function(piece)
+    fn.DungeonClear()
+    local hrp=fn.PlayerHRP()
+    if hrp then hrp.CFrame=CFrame.new(piece.Position+Vector3.new(0,2,0)) end
+    task.wait(0.15)
+    local pp=piece:FindFirstChild("PuzzlePrompt") or piece:FindFirstChildOfClass("ProximityPrompt")
+    if not pp then for _,ch in ipairs(piece:GetDescendants()) do if ch:IsA("ProximityPrompt") then pp=ch break end end end
+    if pp then pcall(function() fireproximityprompt(pp) end) task.wait(0.2) pcall(function() fireproximityprompt(pp) end) end
+end
 fn.DoDungeonQuestTick=function()
     if not F.DungeonQuest then return end
     local step=S.DungeonStep
-    -- Step 0: accept quest remotely (no TP needed), then start collecting
+    -- Step 0: fire quest accept, jump straight to collecting
     if step<1 then
-        fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
-        S.Notify.new({Title="Dungeon Quest",Content="Accepting quest...",Duration=2,Icon=S.ICON})
+        fn.DungeonClear()
         fn.AcceptDungeonQuest()
-        task.wait(0.5)
         S.DungeonStep=1 S.DungeonCollected={}
-        S.Notify.new({Title="Dungeon Quest",Content="Quest accepted — starting piece #1",Duration=3,Icon=S.ICON})
         return
     end
-    -- Step >6: done, return to dungeon master to turn in
+    -- All 6 done: TP to dungeon master, turn in
     if step>6 then
-        fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
-        S.Notify.new({Title="Dungeon Quest",Content="All 6 pieces collected! Returning to Dungeon Master",Duration=4,Icon=S.ICON})
+        fn.DungeonClear()
         fn.ForceTP("Dungeon")
-        task.wait(4)
-        fn.WaitChar()
+        task.wait(1) fn.WaitChar() task.wait(1)
         fn.AcceptDungeonQuest()
-        task.wait(1)
-        F.DungeonQuest=false
-        S.DungeonStep=0 S.DungeonCollected={}
+        F.DungeonQuest=false S.DungeonStep=0 S.DungeonCollected={}
         if S.DungeonToggle then pcall(function() S.DungeonToggle:SetValue(false) end) end
-        S.Notify.new({Title="Dungeon Quest",Content="Complete! Dungeon unlocked.",Duration=5,Icon=S.ICON})
+        S.Notify.new({Title="Dungeon Quest",Content="Complete! Dungeon unlocked.",Duration=4,Icon=S.ICON})
         return
     end
-    -- Steps 1-6: collect piece on each island
+    -- Steps 1-6: TP to island, find piece, collect, advance
     local island=S.DungeonPieceIslands[step]
     if not island then S.DungeonStep=step+1 return end
-    if S.DungeonCollected and S.DungeonCollected[step] then
-        S.DungeonStep=step+1
-        return
-    end
-    -- CRITICAL: clear hover/tween so RenderStepped doesn't fight the TP
-    fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
-    -- Teleport
-    S.Notify.new({Title="Piece #"..step,Content="TP → "..fn.PortalDisplayName(island),Duration=3,Icon=S.ICON})
+    if S.DungeonCollected and S.DungeonCollected[step] then S.DungeonStep=step+1 return end
+    fn.DungeonClear()
+    S.Notify.new({Title="Dungeon",Content="Piece #"..step.." → "..fn.PortalDisplayName(island),Duration=2,Icon=S.ICON})
     fn.ForceTP(island)
-    task.wait(1)
+    -- Tight wait: just enough for char to respawn after TP
+    task.wait(0.5)
     fn.WaitChar()
-    task.wait(3)
-    -- Search for piece (retry a few times for slow island load)
-    local piece=nil
-    for attempt=1,5 do
-        piece=fn.FindDungeonPiece(island)
-        if piece then break end
-        task.wait(2)
-    end
+    task.wait(0.5)
+    -- Fast search — piece should exist immediately if island is loaded
+    local piece=fn.FindDungeonPiece(island)
+    if not piece then task.wait(1) piece=fn.FindDungeonPiece(island) end
+    if not piece then task.wait(1) piece=fn.FindDungeonPiece(island) end
     if not piece then
-        -- Piece not found — either already collected or doesn't exist on this island
-        S.Notify.new({Title="Piece #"..step,Content="Not found — marking as already collected",Duration=3,Icon=S.ICON})
-        if not S.DungeonCollected then S.DungeonCollected={} end
-        S.DungeonCollected[step]=true
-        S.DungeonStep=step+1
-        return
+        S.Notify.new({Title="Dungeon",Content="Piece #"..step.." not found — skipping",Duration=2,Icon=S.ICON})
+    else
+        fn.DungeonCollectPiece(piece)
     end
-    -- Move to piece: clear hover again, then CFrame directly
-    S.HoverPos=nil S.LockTarget=nil fn.StopTw()
-    local pos=piece.Position
-    local hrp=fn.PlayerHRP()
-    if hrp then
-        hrp.CFrame=CFrame.new(pos.X,pos.Y+2,pos.Z)
-        task.wait(0.5)
-    end
-    -- Fire PuzzlePrompt
-    local pp=piece:FindFirstChild("PuzzlePrompt") or piece:FindFirstChildOfClass("ProximityPrompt")
-    if not pp then for _,ch in ipairs(piece:GetDescendants()) do if ch:IsA("ProximityPrompt") then pp=ch break end end end
-    if pp then
-        pcall(function() fireproximityprompt(pp) end)
-        task.wait(0.5)
-        pcall(function() fireproximityprompt(pp) end)
-    end
-    -- Mark collected, advance
     if not S.DungeonCollected then S.DungeonCollected={} end
     S.DungeonCollected[step]=true
     S.DungeonStep=step+1
-    -- Clear hover so next TP works
-    fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
-    S.Notify.new({Title="Piece #"..step.." ✓",Content=step<6 and("Next: piece #"..(step+1).." → "..fn.PortalDisplayName(S.DungeonPieceIslands[step+1] or "?")) or "All 6 pieces found!",Duration=3,Icon=S.ICON})
-    task.wait(2)
 end
 fn.ScanDungeonDebug=function()
     local lines={}
@@ -1474,31 +1448,25 @@ task.spawn(function() while S.Running do task.wait(1) pcall(function() LT:SetTex
 WM:AddText({Icon="server",Text=S.Hub.Version})
 S.Win:DrawCategory({Name="AUTO FARM"})
 local FTab=S.Win:DrawTab({Name="Farm",Icon="sword",EnableScrolling=true})
+S.Win:DrawCategory({Name="AUTO QUESTS"})
 local QTab=S.Win:DrawTab({Name="Quests",Icon="bookmark",EnableScrolling=true})
 local QSec=QTab:DrawSection({Name="Unlock Quests",Position="left"})
 S.DungeonToggle=QSec:AddToggle({Name="Unlock Dungeons",Flag="DungeonQuest",Default=false,Callback=function(v)
     F.DungeonQuest=v
     if v then
+        -- Full reset on every enable — stress-test safe
         S.DungeonStep=0 S.DungeonCollected={}
-        if F.AutoFarmLevel then
-            F.AutoFarmLevel=false
-            if S.FarmToggle then pcall(function() S.FarmToggle:SetValue(false) end) end
-            fn.FullReset()
-        end
-        if F.SummonBossEnabled then
-            F.SummonBossEnabled=false
-            if S.SummonBossToggle then pcall(function() S.SummonBossToggle:SetValue(false) end) end
-            fn.ExitSummonBossMode()
-        end
-        if F.BossEnabled then
-            F.BossEnabled=false
-            if S.BossToggle then pcall(function() S.BossToggle:SetValue(false) end) end
-        end
-        S.BossFight=false S.SummonBossFight=false
+        fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+        S.LastTP=0 S.TPCount=0 S.TPReset=tick()
+        -- Pause other modes without disabling their toggles
+        if S.SummonBossFight then fn.ExitSummonBossMode() end
+        if S.BossFight then S.BossFight=false S.BossTargetName=nil S.BossTPDone=false end
         fn.ClearTgt() S.HoverPos=nil
         S.Notify.new({Title="Dungeon Quest",Content="Starting dungeon unlock quest",Duration=3,Icon=S.ICON})
     else
         S.DungeonStep=0 S.DungeonCollected={}
+        fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+        S.LastTP=0 S.TPCount=0 S.TPReset=tick()
         fn.AbandonDungeonQuest()
         fn.ClearTgt() S.HoverPos=nil
         S.Notify.new({Title="Dungeon Quest",Content="Quest abandoned",Duration=3,Icon=S.ICON})
@@ -1506,10 +1474,6 @@ S.DungeonToggle=QSec:AddToggle({Name="Unlock Dungeons",Flag="DungeonQuest",Defau
 end})
 S.DungeonToggle.Link:AddHelper({Text="Collect 6 pieces across islands to unlock dungeons"})
 QSec:AddParagraph({Title="Info",Content="1. Accepts quest remotely\n2. Collects 6 pieces (Starter→Jungle→Desert→Snow→Shibuya→Hueco Mundo)\n3. Returns to Dungeon Master\n\nPriority: overrides all other modes"})
-local QDebugSec=QTab:DrawSection({Name="Quest Debug",Position="right"})
-S.QuestDebugP=QDebugSec:AddParagraph({Title="Debug Output",Content="Press Scan to debug"})
-QDebugSec:AddButton({Name="Scan Dungeon",Callback=function() local txt=fn.ScanDungeonDebug() if S.QuestDebugP then pcall(function() if S.QuestDebugP.SetContent then S.QuestDebugP:SetContent(txt) elseif S.QuestDebugP.Set then S.QuestDebugP:Set(txt) elseif S.QuestDebugP.SetText then S.QuestDebugP:SetText(txt) end end) end S.Notify.new({Title="Quest Debug",Content="Scan complete — check Debug section",Duration=3,Icon=S.ICON}) end})
-QDebugSec:AddButton({Name="Copy Debug to Clipboard",Callback=function() local txt=fn.ScanDungeonDebug() pcall(function() setclipboard(txt) end) S.Notify.new({Title="Debug Copied",Content="Paste in Discord for help!",Duration=3,Icon=S.ICON}) end})
 local FSec=FTab:DrawSection({Name="Auto Farm Level",Position="left"})
 S.FarmToggle=FSec:AddToggle({Name="Auto Farm Level",Flag="AutoFarmLevel",Default=false,Callback=function(v) F.AutoFarmLevel=v if not v then fn.FullReset() end end})
 S.FarmKeybind=S.FarmToggle.Link:AddKeybind({Default="V",Flag="FarmLevelKeybind",Callback=function() end})
@@ -1518,7 +1482,14 @@ FSec:AddToggle({Name="Auto Equip Sword",Flag="AutoEquip",Default=true,Callback=f
 FSec:AddToggle({Name="Auto Quest",Flag="AutoQuest",Default=true,Callback=function(v) F.AutoQuest=v if v and F.AutoFarmLevel then task.spawn(fn.EnableGameQuestRepeat) end end})
 FSec:AddToggle({Name="Set Spawn Crystal",Flag="AutoSpawn",Default=false,Callback=function(v) F.AutoSpawn=v S.SpawnDone=false end}).Link:AddHelper({Text="TP to crystal on arrival"})
 FSec:AddToggle({Name="Anti-AFK",Flag="AntiAFK",Default=true,Callback=function(v) F.AntiAFK=v end}).Link:AddHelper({Text="Prevents disconnect"})
-FSec:AddDropdown({Name="Island",Default="Auto",Values=fn.GetIslandNames(),Flag="SelectedIsland",Callback=function(v) F.SelectedIsland=v fn.FullReset() end})
+FSec:AddDropdown({Name="Island",Default="Auto",Values=fn.GetIslandNames(),Flag="SelectedIsland",Callback=function(v)
+    F.SelectedIsland=v
+    fn.StopTw() fn.ClearTgt() S.HoverPos=nil S.LockTarget=nil
+    S.CurIsland=nil S.IslandTPd=false S.SpawnDone=false S.LastEnemy=0
+    S.LastTP=0 S.TPCount=0 S.TPReset=tick()
+    S.QState="NONE"
+    S.Notify.new({Title="Island Changed",Content="Now farming: "..fn.PortalDisplayName(v),Duration=2,Icon=S.ICON})
+end})
 FSec:AddDropdown({Name="Farm Style",Default="Plank",Values={"Plank","Behind"},Flag="FarmMode",Callback=function(v) F.FarmMode=v fn.ClearTgt() S.HoverPos=nil if v~="Plank" then pcall(function() local c=LP.Character if c then local hm=c:FindFirstChildOfClass("Humanoid") if hm then hm.PlatformStand=false end end end) end end}).Link:AddHelper({Text="Plank = hover above | Behind = stand behind"})
 FSec:AddDropdown({Name="Move Mode",Default="Tween",Values={"Tween","Teleport"},Flag="MoveMode",Callback=function(v) F.MoveMode=v fn.ClearTgt() S.HoverPos=nil end}).Link:AddHelper({Text="Tween = smooth | Teleport = instant"})
 FSec:AddSlider({Name="Height (Plank)",Min=5,Max=40,Default=10,Round=0,Flag="HeightOffset",Callback=function(v) F.HeightOffset=v end})
@@ -1657,8 +1628,13 @@ task.spawn(function()
                 S.LastBossTP=0 S.BossTPDone=false S.LastSummonBossTP=0 S.SummonBossTPDone=false
             end
             if not fn.IsAlive() then task.wait(0.3) break end
-            -- Dungeon Quest gets HIGHEST priority
-            if F.DungeonQuest then local dok,derr=pcall(fn.DoDungeonQuestTick) if not dok then S.Notify.new({Title="Dungeon Error",Content=tostring(derr):sub(1,80),Duration=5,Icon=S.ICON}) end task.wait(0.2) break end
+            -- Dungeon Quest gets HIGHEST priority — force-exit other modes
+            if F.DungeonQuest then
+                if S.SummonBossFight then fn.ExitSummonBossMode() end
+                if S.BossFight then S.BossFight=false S.BossTargetName=nil fn.ClearTgt() S.HoverPos=nil end
+                local dok,derr=pcall(fn.DoDungeonQuestTick) if not dok then S.Notify.new({Title="Dungeon Error",Content=tostring(derr):sub(1,80),Duration=5,Icon=S.ICON}) end
+                task.wait(0.2) break
+            end
             if not isSummonActive and S.SummonBossFight then fn.ExitSummonBossMode() end
             if isSummonActive and not S.SummonBossFight then
                 S.SummonBossFight=true S.BossFight=false S.BossTargetName=nil S.BossTPDone=false S.SummonBossTPDone=false S.LastSummonBossTP=0 S.SummonBossCurrentIsland=nil S.SummonBossOrder=0 S.SummonBossFailCount={} S.SummonBossFireTime={} fn.ClearTgt() S.HoverPos=nil S.CurIsland=nil S.IslandTPd=false
