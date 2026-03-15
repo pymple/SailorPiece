@@ -650,7 +650,7 @@ end
 fn.TweenToPoint=function(goal)
     local hrp=fn.PlayerHRP() if not hrp then return end
     local d=(hrp.Position-goal).Magnitude
-    if d>500 then return end
+    if d>1500 then return end
     if d<5 then S.HoverPos=goal return end
     fn.StopTw() S.TweenOn=true S.LockTarget=nil
     local cf=CFrame.new(goal,goal+Vector3.new(0,-1,0))
@@ -1224,7 +1224,7 @@ fn.DoSummonBossTick=function()
                 local goal=Vector3.new(bp.X,bp.Y+F.HeightOffset,bp.Z)
                 local hrp=fn.PlayerHRP()
                 local d=hrp and (hrp.Position-goal).Magnitude or math.huge
-                if d<=500 then
+                if d<=1500 then
                     fn.TweenToPoint(goal)
                     S.HoverPos=goal
                 end
@@ -1316,7 +1316,7 @@ fn.DoSummonBossTick=function()
     if not bossPos or bossPos.Y<-30 then task.wait(0.15) return end
     local dist=fn.DistTo(bossPos)
     -- Too far = not on the right island yet, re-trigger portal TP
-    if dist>500 then
+    if dist>1500 then
         S.SummonBossTPDone=false S.LastSummonBossTP=0
         fn.ClearTgt()
         return
